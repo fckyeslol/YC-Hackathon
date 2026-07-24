@@ -17,7 +17,6 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.115.0",
     "@dynamic-labs-wallet/core": "^1.0.80",
     "@dynamic-labs-wallet/node": "^1.0.80",
     "@dynamic-labs-wallet/node-evm": "^1.0.80",

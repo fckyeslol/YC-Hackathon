@@ -11,7 +11,7 @@ import { handleAgentMessage, type AgentOutcome, type OrchestratorDeps } from "..
 import { RETRY_PROMPT, transcribeVoice, type Transcriber } from "../agent/voice.js";
 import type { DynamicWallet } from "../clients/dynamic.js";
 import { buildDynamicPorts, dynamicConfigured } from "../clients/dynamicPorts.js";
-import { makeAnthropicClassifier } from "../clients/anthropicBrain.js";
+import { makeClaudeClassifier } from "../clients/runwareBrain.js";
 import { makeGroqTranscriber } from "../clients/groqStt.js";
 import { terac } from "../clients/terac.js";
 import { makeTeracDeliver } from "../escalation/teracDelivery.js";
@@ -47,11 +47,12 @@ const notConfiguredLlm: LlmClassifier = async () => {
 };
 
 /**
- * The brain: Claude via the official Anthropic SDK when ANTHROPIC_API_KEY is set,
- * else the fail-closed stub (parseIntent → "unknown", never guesses money, BR-P10).
+ * The brain: Claude reached through Runware's OpenAI-compatible endpoint when
+ * RUNWARE_API_KEY is set, else the fail-closed stub (parseIntent → "unknown",
+ * never guesses money, BR-P10). See ADR-006.
  */
-const classify: LlmClassifier = config.ANTHROPIC_API_KEY
-  ? makeAnthropicClassifier({ apiKey: config.ANTHROPIC_API_KEY, model: config.ANTHROPIC_MODEL })
+const classify: LlmClassifier = config.RUNWARE_API_KEY
+  ? makeClaudeClassifier({ apiKey: config.RUNWARE_API_KEY, model: config.RUNWARE_LLM_MODEL, baseUrl: config.RUNWARE_BASE_URL })
   : notConfiguredLlm;
 
 /**
@@ -211,7 +212,7 @@ app
       console.warn("[verdict] Dynamic not configured (DYNAMIC_ENVIRONMENT_ID / _AGENT_SIGNING_TOKEN / _WALLET_PASSWORD) — ledger stubbed");
     }
     console.log(
-      `[verdict] brain LLM: ${config.ANTHROPIC_API_KEY ? `Claude (${config.ANTHROPIC_MODEL})` : "STUB (set ANTHROPIC_API_KEY)"} · voice STT: ${config.GROQ_API_KEY ? `Groq (${config.GROQ_STT_MODEL})` : "STUB (set GROQ_API_KEY)"}`,
+      `[verdict] brain LLM: ${config.RUNWARE_API_KEY ? `Claude via Runware (${config.RUNWARE_LLM_MODEL})` : "STUB (set RUNWARE_API_KEY)"} · voice STT: ${config.GROQ_API_KEY ? `Groq (${config.GROQ_STT_MODEL})` : "STUB (set GROQ_API_KEY)"}`,
     );
   })
   .catch((err) => {

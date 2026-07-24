@@ -1,21 +1,21 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type { LlmClassifier } from "../agent/types.js";
 import type { AnonymizedSummary, LeakHit } from "../anonymization/types.js";
 
 /**
- * Live Anthropic (Claude) adapters — the "brain" of Verdict.
+ * Live "brain" adapters — Anthropic Claude models reached through Runware's
+ * OpenAI-compatible chat-completions endpoint (ADR-006). Runware exposes Claude
+ * over the OpenAI protocol, so this talks plain `fetch` to `${base}/chat/completions`
+ * (no SDK, keeps the dep tree small — same style as the Groq STT adapter).
  *
  * Two ports plug in here, both against contracts defined elsewhere so this file
- * is the ONLY place that touches the model SDK (composition-root discipline):
+ * is the ONLY place that touches the model gateway (composition-root discipline):
  *
  *   1. LlmClassifier (intent-parser BR-P1): text -> raw UNVALIDATED guess.
- *      parseIntent re-validates with Zod and fail-closes to `unknown`, so this
- *      adapter never has to be trusted — it only has to try.
+ *      parseIntent re-validates with Zod and fail-closes to `unknown`.
  *   2. leak-check LLM layer (anonymization BR-A5): scans an AnonymizedSummary
- *      for anything that could reidentify the user. Additive-only and
- *      FAIL-CLOSED: if the model errors, we BLOCK (return a hit), never pass.
+ *      for reidentifying PII. Additive-only and FAIL-CLOSED: on error it BLOCKS.
  *
- * Privacy: nothing here logs message text, audio, or summary contents (BR-A7).
+ * Privacy (BR-A7/BR-V7): nothing here logs message text or summary contents.
  */
 
 // --- Intent classifier (brain: "entender mensajes") ---
@@ -58,6 +58,15 @@ Reglas:
 - Español coloquial colombiano e inglés básico. Cualquier otro idioma o mensaje incomprensible → intent "unknown" con confidence baja.
 - confirm/cancel: respuestas a una propuesta pendiente ("sí, dale" → confirm). smalltalk: charla. unknown: no entendés.`;
 
+const LEAK_SYSTEM = `Sos un auditor de privacidad adversarial. Recibís un resumen financiero YA anonimizado que se le va a mostrar a un revisor humano externo. Tu trabajo es intentar REIDENTIFICAR al usuario o encontrar cualquier dato crudo filtrado.
+
+Un revisor NUNCA puede ver: nombre, teléfono, email, cédula, número de cuenta, una transacción individual (comercio+monto+fecha), nombre de contraparte, saldo exacto, ni detalle de categorías sensibles (salud, legal, religión, política).
+
+Respondé SOLO con JSON (sin texto alrededor):
+{ "hits": [ { "gate": "G1".."G6", "evidence": "el fragmento exacto", "why": "por qué filtra" } ] }
+
+Si el resumen está limpio, devolvé { "hits": [] }. Ante la duda, marcá el hit — es fail-closed: preferimos bloquear de más que filtrar.`;
+
 /**
  * Pull a JSON object out of the model's text, tolerant of stray prose or code
  * fences. Returns `unknown` — parseIntent validates it (BR-P1). Throws if there
@@ -72,49 +81,6 @@ export function extractJson(text: string): unknown {
   }
   return JSON.parse(fenced.slice(start, end + 1));
 }
-
-/** Concatenate the text blocks of a Claude message into one string. */
-function messageText(content: Anthropic.ContentBlock[]): string {
-  return content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("");
-}
-
-export interface BrainOptions {
-  readonly apiKey: string;
-  readonly model: string;
-}
-
-/**
- * Real LLM classifier for parseIntent. A hard failure THROWS on purpose so the
- * parser catches it and returns `unknown` (fail-closed, BR-P10) — we never
- * fabricate a money action from a broken model call.
- */
-export function makeAnthropicClassifier(opts: BrainOptions): LlmClassifier {
-  const client = new Anthropic({ apiKey: opts.apiKey });
-  return async (userText: string): Promise<unknown> => {
-    const res = await client.messages.create({
-      model: opts.model,
-      max_tokens: 1024,
-      output_config: { effort: "low" }, // fast/cheap: this is classification, not reasoning
-      system: CLASSIFIER_SYSTEM,
-      messages: [{ role: "user", content: userText }],
-    });
-    return extractJson(messageText(res.content));
-  };
-}
-
-// --- Intelligent leak-check layer (anonymization BR-A5, additive + fail-closed) ---
-
-const LEAK_SYSTEM = `Sos un auditor de privacidad adversarial. Recibís un resumen financiero YA anonimizado que se le va a mostrar a un revisor humano externo. Tu trabajo es intentar REIDENTIFICAR al usuario o encontrar cualquier dato crudo filtrado.
-
-Un revisor NUNCA puede ver: nombre, teléfono, email, cédula, número de cuenta, una transacción individual (comercio+monto+fecha), nombre de contraparte, saldo exacto, ni detalle de categorías sensibles (salud, legal, religión, política).
-
-Respondé SOLO con JSON (sin texto alrededor):
-{ "hits": [ { "gate": "G1".."G6", "evidence": "el fragmento exacto", "why": "por qué filtra" } ] }
-
-Si el resumen está limpio, devolvé { "hits": [] }. Ante la duda, marcá el hit — es fail-closed: preferimos bloquear de más que filtrar.`;
 
 /** Parse the model's leak verdict into LeakHit[]. Tolerant; never throws. */
 export function parseLeakHits(text: string): LeakHit[] {
@@ -136,30 +102,68 @@ export function parseLeakHits(text: string): LeakHit[] {
     }));
 }
 
+export interface BrainOptions {
+  readonly apiKey: string;
+  readonly model: string;
+  readonly baseUrl: string;
+  /** Injectable for tests; defaults to global fetch. */
+  readonly fetchImpl?: typeof fetch;
+}
+
+interface ChatCompletion {
+  readonly choices?: readonly { readonly message?: { readonly content?: string } }[];
+}
+
+/** One OpenAI-compatible chat call to Runware. Throws on non-2xx. */
+async function chat(opts: BrainOptions, system: string, user: string): Promise<string> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const res = await doFetch(`${opts.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${opts.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: opts.model,
+      temperature: 0, // deterministic extraction/audit
+      max_tokens: 1024,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`runware chat failed: ${res.status}`);
+  const json = (await res.json()) as ChatCompletion;
+  return json.choices?.[0]?.message?.content ?? "";
+}
+
 /**
- * Async intelligent leak scan over an anonymized summary. Returns LeakHit[]:
- * empty means "the LLM found nothing" (the regex floor still runs separately).
- * On ANY model/transport error it returns a blocking hit — a down auditor must
+ * Real LLM classifier for parseIntent (Claude via Runware). A hard failure
+ * THROWS on purpose so the parser catches it and returns `unknown`
+ * (fail-closed, BR-P10) — we never fabricate a money action from a broken call.
+ */
+export function makeClaudeClassifier(opts: BrainOptions): LlmClassifier {
+  return async (userText: string): Promise<unknown> => {
+    return extractJson(await chat(opts, CLASSIFIER_SYSTEM, userText));
+  };
+}
+
+/**
+ * Async intelligent leak scan over an anonymized summary (Claude via Runware).
+ * Returns LeakHit[]: empty means "found nothing" (the regex floor still runs
+ * separately). On ANY error it returns a blocking hit — a down auditor must
  * never silently let a summary through (BR-A5 fail-closed).
  *
- * NOTE: leakCheck's `extraScan` port is synchronous, so the caller must
- * pre-resolve this promise and hand the result in as `() => hits`. See
- * src/server/index.ts for the wiring.
+ * NOTE: leakCheck's `extraScan` port is synchronous, so the caller pre-resolves
+ * this promise and hands the result in as `() => hits`.
  */
-export function makeAnthropicLeakScan(
+export function makeClaudeLeakScan(
   opts: BrainOptions,
 ): (anon: AnonymizedSummary) => Promise<readonly LeakHit[]> {
-  const client = new Anthropic({ apiKey: opts.apiKey });
   return async (anon: AnonymizedSummary): Promise<readonly LeakHit[]> => {
     try {
-      const res = await client.messages.create({
-        model: opts.model,
-        max_tokens: 1024,
-        output_config: { effort: "low" },
-        system: LEAK_SYSTEM,
-        messages: [{ role: "user", content: JSON.stringify(anon) }],
-      });
-      return parseLeakHits(messageText(res.content));
+      return parseLeakHits(await chat(opts, LEAK_SYSTEM, JSON.stringify(anon)));
     } catch {
       return [{ gate: "G-LLM", evidence: "llm-scan-failed", why: "leak-check LLM no disponible; se bloquea el envío (fail-closed)" }];
     }
