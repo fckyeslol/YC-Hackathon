@@ -109,7 +109,7 @@ describe("THE loop end-to-end (inbound → escalation → human verdict)", () =>
     // --- Hop 4: the human verdict comes back to the user via coaching ---
     expect(coach).toHaveBeenCalledOnce();
     expect(coach.mock.calls[0]![0]).toBe(phone);
-    expect(coach.mock.calls[0]![1]).toMatch(/veredicto/i);
+    expect(coach.mock.calls[0]![1]).toMatch(/verdict/i);
   });
 
   test("if the LLM auditor flags a leak, the loop halts before Terac (fail-closed)", async () => {

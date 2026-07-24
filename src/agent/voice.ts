@@ -20,7 +20,7 @@ export type Transcriber = (mediaUrl: string) => Promise<Transcription>;
 export const MIN_CONFIDENCE = 0.5;
 
 /** What the agent replies when it will not guess a fuzzy transcription (BR-V3). */
-export const RETRY_PROMPT = "No te entendí bien en el audio 🙏 ¿me lo escribís?";
+export const RETRY_PROMPT = "I couldn't quite catch that audio 🙏 could you type it?";
 
 export type VoiceResult =
   | { readonly ok: true; readonly text: string; readonly confidence: number }

@@ -39,7 +39,7 @@ describe("teracDelivery (B1 — sanctioned Terac deliver, PII-free by constructi
     expect(input.num_participants).toBe(3);
     expect(input.tasks[0]!.task_url).toBe("https://verdict.app/review/Revisor-anonimo-4f2a91b0c3d2");
     expect(input.description).toContain("comida 42%");
-    expect(input.description).toContain("Perfil anónimo");
+    expect(input.description).toContain("Anonymous profile");
   });
 
   test("makeTeracDeliver ensures project, creates the opportunity, then launches it", async () => {

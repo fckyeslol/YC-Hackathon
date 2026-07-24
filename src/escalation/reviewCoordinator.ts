@@ -19,11 +19,11 @@ import type { ReviewCard } from "../server/reviewPage.js";
 
 // Boundary via negative lookahead, NOT \b: "sí" ends in an accented char that \b
 // does not treat as a word char, so \b would never match after it.
-const AFFIRMATIVE = /^\s*(s[ií]|dale|okay?|confirmo|listo|de una|👍|👌)(?![a-záéíóúüñ])/i;
-const NEGATIVE = /^\s*(no|cancel(ar)?|mejor no|d[ée]jalo)(?![a-záéíóúüñ])/i;
+const AFFIRMATIVE = /^\s*(s[ií]|dale|okay?|ok|yes|yeah|yep|sure|go|share|confirmo|listo|de una|👍|👌)(?![a-záéíóúüñ])/i;
+const NEGATIVE = /^\s*(no|nope|nah|don'?t|stop|cancel(ar)?|mejor no|d[ée]jalo)(?![a-záéíóúüñ])/i;
 const DEFAULT_QUORUM = 3;
-const DEFAULT_PROMPT = "¿Le darías luz verde a esta acción?";
-const DEFAULT_OPTIONS = ["No", "Sí"] as const;
+const DEFAULT_PROMPT = "Would you give this action the green light?";
+const DEFAULT_OPTIONS = ["No", "Yes"] as const;
 
 export interface ReviewCoordinatorDeps {
   /** Send the anonymized summary to Terac reviewers (best-effort; may be a stub). */
@@ -90,7 +90,7 @@ export class ReviewCoordinator {
 
     if (NEGATIVE.test(replyText)) {
       this.pendingByChat.delete(chatId);
-      return { consented: false, reply: "Listo, no lo comparto. 👍" };
+      return { consented: false, reply: "Okay, I won't share it. 👍" };
     }
     if (!AFFIRMATIVE.test(replyText)) return { consented: false };
 
@@ -111,7 +111,7 @@ export class ReviewCoordinator {
       // loop stays demoable — the review page opens regardless.
     }
     if (leakBlocked) {
-      return { consented: false, reply: "Por seguridad no puedo compartir tu resumen ahora. Probemos de otra forma." };
+      return { consented: false, reply: "For your safety I can't share your summary right now. Let's try another way." };
     }
 
     // Gate passed → open the local review session so /review/:pseudonym resolves.
@@ -130,7 +130,7 @@ export class ReviewCoordinator {
       closed: false,
     });
 
-    return { consented: true, reply: "Listo, le pedí criterio a revisores reales (anónimo). Te aviso apenas haya consenso. 🙌" };
+    return { consented: true, reply: "Done — I asked real reviewers for their take (anonymously). I'll let you know as soon as there's consensus. 🙌" };
   }
 
   /** The review page (BR-T2) resolves the card by pseudonym. */
@@ -170,12 +170,12 @@ export class ReviewCoordinator {
   private summarize(session: Session, lastAdvice?: string): string {
     const result = computeConsensus(session.poll, session.votes);
     const ds = result.dawidSkene;
-    const verdict = ds ? ds.labelText : "sin consenso";
-    const conf = ds ? ` (confianza ${(ds.confidence * 100).toFixed(0)}%)` : "";
+    const verdict = ds ? ds.labelText : "no consensus";
+    const conf = ds ? ` (confidence ${(ds.confidence * 100).toFixed(0)}%)` : "";
     // The reviewers' free advice is echoed only if it carries no PII (BR-T8).
     const advice = lastAdvice && leakCheck({ reviewPseudonym: "p", categoryBreakdown: [], trendsVsPrior: [], behaviorFlags: [lastAdvice], amountBuckets: [] }).ok
-      ? ` Un revisor sugiere: "${lastAdvice}".`
+      ? ` One reviewer suggests: "${lastAdvice}".`
       : "";
-    return `Revisores humanos revisaron tu caso: veredicto **${verdict}**${conf}.${advice}`;
+    return `Real humans reviewed your case: verdict **${verdict}**${conf}.${advice}`;
   }
 }

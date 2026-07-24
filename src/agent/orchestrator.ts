@@ -52,10 +52,10 @@ export interface OrchestratorDeps {
 
 /** Friendly canned welcome when no conversational adapter is available (BR-CV4). */
 export const WELCOME =
-  "¡Hola! 👋 Soy tu asesor financiero. Puedo mover tu plata, mostrarte en qué gastás y darte consejo revisado por humanos reales. ¿Qué necesitás?";
+  "Hey! 👋 I'm your financial advisor. I can move your money, show you where it's going, and give you advice reviewed by real humans. What do you need?";
 
 /** Distinct from small-talk: we genuinely didn't understand (BR-CV5). */
-export const NOT_UNDERSTOOD = "No te entendí del todo 🙏 ¿me lo explicás de otra forma?";
+export const NOT_UNDERSTOOD = "I didn't quite get that 🙏 could you say it another way?";
 
 /** Fold pre-resolved LLM hits into the (optional) sync leak options. Additive-only. */
 function composeLeakOpts(base: LeakCheckOptions | undefined, llmHits: readonly LeakHit[]): LeakCheckOptions {
@@ -91,7 +91,7 @@ export async function handleAgentMessage(
   }
   if (intent === "confirm" || intent === "cancel") {
     // pending_action resolution (BR-P7) is wired at the tapback layer; ack here.
-    return { kind: "reply", text: intent === "confirm" ? "Dale, confirmado ✅" : "Listo, lo cancelo." };
+    return { kind: "reply", text: intent === "confirm" ? "Done, confirmed ✅" : "Okay, I'll cancel it." };
   }
   if (QUERY_INTENTS.has(intent)) {
     // Read-only → auto (BR-G1). No money moves. When a conversational adapter is
@@ -124,7 +124,7 @@ export async function handleAgentMessage(
     const leak = leakCheck(anon, composeLeakOpts(deps.leakOpts, llmHits));
     if (!leak.ok) {
       // Fail-closed (BR-A5): never send a leaky summary; degrade safely.
-      return { kind: "blocked", text: "Por seguridad no puedo compartir tu resumen ahora. Probemos de otra forma." };
+      return { kind: "blocked", text: "For your safety I can't share your summary right now. Let's try another way." };
     }
     return { kind: "escalated", previewText: previewText(anon), anon };
   }
@@ -134,7 +134,7 @@ export async function handleAgentMessage(
     return { kind: "confirm_required", text: confirmText(action, fromVoice), action };
   }
   // auto advice → answer directly.
-  return { kind: "answer", text: "Con gusto — acá va mi lectura." };
+  return { kind: "answer", text: "Happy to help — here's my read." };
 }
 
 /**
@@ -154,9 +154,9 @@ export async function completeConsentedEscalation(
 // --- user-facing text (echoes the user's OWN data back to them; no third-party PII) ---
 
 function repromptText(action: Action): string {
-  if (action.missingSlots.includes("recipient")) return "¿A quién se lo envío? 🙂";
-  if (action.missingSlots.includes("amount")) return "¿Qué monto?";
-  return `Me falta un dato para seguir: ${action.missingSlots.join(", ")}.`;
+  if (action.missingSlots.includes("recipient")) return "Who should I send it to? 🙂";
+  if (action.missingSlots.includes("amount")) return "How much?";
+  return `I still need: ${action.missingSlots.join(", ")}.`;
 }
 
 function confirmText(action: Action, fromVoice: boolean): string {
@@ -164,10 +164,10 @@ function confirmText(action: Action, fromVoice: boolean): string {
   const recipient = action.params.recipient;
   const base =
     action.intent === "swap"
-      ? `Entendí: cambiar ${amount ?? ""} ${String(action.params.fromAsset ?? "")} → ${String(action.params.toAsset ?? "")}`
-      : `Entendí: enviar ${amount ?? ""}${recipient ? ` a ${String(recipient)}` : ""}`;
-  const echo = fromVoice ? " (por tu nota de voz)" : "";
-  return `${base}${echo} — ¿confirmás? 👍`;
+      ? `Got it: swap ${amount ?? ""} ${String(action.params.fromAsset ?? "")} → ${String(action.params.toAsset ?? "")}`
+      : `Got it: send ${amount ?? ""}${recipient ? ` to ${String(recipient)}` : ""}`;
+  const echo = fromVoice ? " (from your voice note)" : "";
+  return `${base}${echo} — confirm? 👍`;
 }
 
 function previewText(anon: AnonymizedSummary): string {
@@ -175,5 +175,5 @@ function previewText(anon: AnonymizedSummary): string {
     .slice(0, 3)
     .map((c) => `${c.category} ${c.pct}%`)
     .join(", ");
-  return `Esto es lo ÚNICO que verá el revisor (anónimo): ${top}. ¿Lo comparto? 👍`;
+  return `This is the ONLY thing the (anonymous) reviewer will see: ${top}. Share it? 👍`;
 }

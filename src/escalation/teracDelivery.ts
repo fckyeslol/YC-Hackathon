@@ -40,17 +40,17 @@ export function toOpportunityInput(
   const flags = anon.behaviorFlags.join("; ");
 
   const description = [
-    `Perfil anónimo (${anon.reviewPseudonym}). No hay identidad ni transacciones individuales.`,
-    breakdown && `Reparto por categoría: ${breakdown}.`,
-    trends && `Tendencias vs. período previo: ${trends}.`,
-    flags && `Señales: ${flags}.`,
-    "¿Qué consejo financiero le darías a esta persona?",
+    `Anonymous profile (${anon.reviewPseudonym}). No identity or individual transactions.`,
+    breakdown && `Category breakdown: ${breakdown}.`,
+    trends && `Trends vs. prior period: ${trends}.`,
+    flags && `Signals: ${flags}.`,
+    "What financial advice would you give this person?",
   ]
     .filter(Boolean)
     .join(" ");
 
   return {
-    title: "Revisión anónima de finanzas — pedimos tu criterio",
+    title: "Anonymous finance review — we'd like your take",
     internal_title: `verdict-review-${anon.reviewPseudonym}`,
     description,
     project_id: projectId,

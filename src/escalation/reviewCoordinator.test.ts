@@ -49,7 +49,7 @@ describe("ReviewCoordinator (terac-review E2E glue)", () => {
     coord.stageConsent("chat-1", ANON);
     const out = await coord.maybeConsent("chat-1", "no, mejor no");
     expect(out.consented).toBe(false);
-    expect(out.reply).toMatch(/no lo comparto/i);
+    expect(out.reply).toMatch(/won't share/i);
     expect(coord.hasPending("chat-1")).toBe(false);
     expect(deliver).not.toHaveBeenCalled();
   });
@@ -75,7 +75,7 @@ describe("ReviewCoordinator (terac-review E2E glue)", () => {
     const out = await coord.maybeConsent("chat-9", "sí");
 
     expect(out.consented).toBe(false);
-    expect(out.reply).toMatch(/seguridad/i);
+    expect(out.reply).toMatch(/safety/i);
     expect(deliver).not.toHaveBeenCalled();
     // No session opened for a blocked summary.
     expect(coord.reviewCard("Revisor-anonimo-deadbeef0001")).toBeUndefined();
@@ -95,7 +95,7 @@ describe("ReviewCoordinator (terac-review E2E glue)", () => {
     expect(second.closed).toBe(true);
     expect(coach).toHaveBeenCalledTimes(1);
     expect(coach.mock.calls[0]![0]).toBe("chat-1");
-    expect(coach.mock.calls[0]![1]).toMatch(/veredicto/i);
+    expect(coach.mock.calls[0]![1]).toMatch(/verdict/i);
   });
 
   test("out-of-range labels and unknown pseudonyms are rejected", async () => {

@@ -29,35 +29,35 @@ const EXPLORER_TX = "https://sepolia.basescan.org/tx/";
 
 export class UnknownPayeeError extends Error {
   constructor(recipient: string) {
-    super(`No conozco a "${recipient}" — no está en DYNAMIC_PAYEES. No se paga (BR-D9).`);
+    super(`I don't know "${recipient}" — not in DYNAMIC_PAYEES, so nothing was paid (BR-D9).`);
     this.name = "UnknownPayeeError";
   }
 }
 
 export class InsufficientGasError extends Error {
   constructor(address: string) {
-    super(`La wallet ${address} no tiene ETH nativo para el gas del transfer (BR-D8).`);
+    super(`Wallet ${address} has no native ETH to pay gas for the transfer (BR-D8).`);
     this.name = "InsufficientGasError";
   }
 }
 
 export class InsufficientUsdcError extends Error {
   constructor(have: string, need: string) {
-    super(`Saldo ${have} USDC, el pago necesita ${need} USDC (BR-D8).`);
+    super(`Balance is ${have} USDC but the payment needs ${need} USDC (BR-D8).`);
     this.name = "InsufficientUsdcError";
   }
 }
 
 export class AmountCapExceededError extends Error {
   constructor(requested: string, cap: string) {
-    super(`El pago de ${requested} USDC excede el techo de ${cap} USDC por tx (BR-D10).`);
+    super(`A ${requested} USDC payment exceeds the ${cap} USDC per-transaction cap (BR-D10).`);
     this.name = "AmountCapExceededError";
   }
 }
 
 export class MissingAmountError extends Error {
   constructor() {
-    super("La acción de pago no trae monto utilizable.");
+    super("The payment action carries no usable amount.");
     this.name = "MissingAmountError";
   }
 }
@@ -250,7 +250,7 @@ export class DynamicLedger implements LedgerPort {
     const balance = formatUsdc(units);
 
     if (action.intent === "balance") {
-      return `Tenés ${balance} USDC en tu wallet (Base Sepolia) 💧`;
+      return `You have ${balance} USDC in your wallet (Base Sepolia) 💧`;
     }
 
     // spending_insight / dashboard: lean on the categorized profile.
@@ -263,8 +263,8 @@ export class DynamicLedger implements LedgerPort {
       .join(", ");
 
     return top === ""
-      ? `Todavía no tengo movimientos categorizados. Tu saldo es ${balance} USDC.`
-      : `Donde más se te va: ${top}. Saldo actual: ${balance} USDC.`;
+      ? `I don't have categorized transactions yet. Your balance is ${balance} USDC.`
+      : `Where most of it goes: ${top}. Current balance: ${balance} USDC.`;
   }
 
   async buildSummary(): Promise<Summary> {

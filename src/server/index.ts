@@ -10,6 +10,11 @@ import type { LedgerPort } from "../agent/ports.js";
 import { handleAgentMessage, type AgentOutcome, type OrchestratorDeps } from "../agent/orchestrator.js";
 import { RETRY_PROMPT, transcribeVoice, type Transcriber } from "../agent/voice.js";
 import type { DynamicWallet } from "../clients/dynamic.js";
+import {
+  PendingActionStore,
+  reactionIntent,
+  type ResolveOutcome,
+} from "../agent/pendingAction.js";
 import { buildDynamicPorts, dynamicConfigured } from "../clients/dynamicPorts.js";
 import { makeClaudeClassifier, makeClaudeLeakScan, makeClaudeConversation } from "../clients/runwareBrain.js";
 import { makeGroqTranscriber } from "../clients/groqStt.js";
@@ -17,6 +22,12 @@ import { terac } from "../clients/terac.js";
 import { makeTeracDeliver } from "../escalation/teracDelivery.js";
 import { ReviewCoordinator } from "../escalation/reviewCoordinator.js";
 import { registerReviewRoutes } from "./reviewPage.js";
+import { registerDashboardRoutes } from "./dashboardPage.js";
+import { buildDashboard } from "../dashboard/buildDashboard.js";
+import { toLedgerTxs } from "../dashboard/ledgerAdapter.js";
+import { createDashboardLinkStore, dashboardUrl } from "../dashboard/link.js";
+import { DEMO_SPEND } from "../dashboard/demoSeed.js";
+import type { Range } from "../dashboard/types.js";
 
 /**
  * Verdict server bootstrap: Linq inbound webhook + compliance state + the agent
@@ -32,11 +43,20 @@ function resolveState(phone: string): SendGuardState {
   return { suppressed: state.isSuppressed(phone), healthStatus: state.lineReputation() };
 }
 
-/** Every agent reply goes through the guard — there is no unguarded send path. */
-async function guardedReply(to: string, body: string): Promise<void> {
+/**
+ * Every agent reply goes through the guard — there is no unguarded send path.
+ *
+ * Returns the sent message's id when one was actually delivered, so a payment
+ * proposal can be resolved later by a tapback on that exact message (BR-C2).
+ * Undefined means the guard suppressed the send.
+ */
+async function guardedReply(to: string, body: string): Promise<string | undefined> {
+  let messageId: string | undefined;
   await guardedSend(to, [text(body)], resolveState, async (dst, parts) => {
-    await linq.send(dst, parts);
+    const result = await linq.send(dst, parts);
+    messageId = result.messageId;
   });
+  return messageId;
 }
 
 // --- Ports (fail-closed stubs until the live adapters are wired) ---
@@ -75,7 +95,7 @@ const transcriber: Transcriber | undefined = config.GROQ_API_KEY
   : undefined;
 
 const stubLedger: LedgerPort = {
-  answerQuery: async () => "Todavía no conecté tu billetera para responder eso 🙈 (integración Dynamic pendiente).",
+  answerQuery: async () => "I haven't connected your wallet to answer that yet 🙈 (Dynamic integration pending).",
   buildSummary: async () => ({
     identity: { name: "" },
     categoryTotals: [],
@@ -95,22 +115,61 @@ const stubLedger: LedgerPort = {
  */
 let liveLedger: LedgerPort = stubLedger;
 
+// --- Personal spending dashboard (spec: dashboard-visualization) ------------
+// Tokenized-link store + a dashboard-aware ledger wrapper: a "dashboard" query
+// mints a token, builds the page data server-side, and answers with the link
+// (BR-D2). All other queries pass through to the live/stub ledger untouched.
+const dashboardLinks = createDashboardLinkStore();
+
+function rangeOf(action: { params: Record<string, unknown> }): Range {
+  const p = String(action.params.period ?? "").toLowerCase();
+  if (p.includes("año") || p.includes("12")) return "12meses";
+  if (p.includes("trimestre") || p.includes("3")) return "3meses";
+  return "mes";
+}
+
 /** Delegates per call, so `agentDeps` stays const while the adapter is upgraded. */
 const delegatingLedger: LedgerPort = {
-  answerQuery: (action) => liveLedger.answerQuery(action),
+  answerQuery: async (action) => {
+    if (action.intent === "dashboard") {
+      const txs = toLedgerTxs(DEMO_SPEND, config.DYNAMIC_COP_PER_USDC);
+      const data = buildDashboard(txs, rangeOf(action), { generatedAt: new Date().toISOString() });
+      const token = dashboardLinks.mint(data);
+      return `Here's your spending dashboard 📊\n${dashboardUrl(config.PUBLIC_URL, token)}\n(the link expires in 15 min and is yours only)`;
+    }
+    return liveLedger.answerQuery(action);
+  },
   buildSummary: () => liveLedger.buildSummary(),
 };
 
-/**
- * The agent wallet, available once configured. Execution is deliberately NOT wired
- * to `confirm` here: that hop needs `pending_action` (BR-P7), which belongs to
- * intent-parser.spec and is still listed pending there. Wiring it without that spec
- * would let a bare "sí" pay an action nobody tracked.
- */
+/** The agent wallet, available once the Dynamic adapter signs in. */
 let liveWallet: DynamicWallet | undefined;
 
 export function agentWallet(): DynamicWallet | undefined {
   return liveWallet;
+}
+
+/**
+ * Payment confirmations awaiting a "sí"/👍 (spec: payment-confirmation).
+ * Staging happens on `confirm_required`; nothing is signed until resolved.
+ */
+const pendingActions = new PendingActionStore();
+
+/** Renders a resolved payment for the user (BR-C6 / BR-C7). */
+function paymentReply(outcome: ResolveOutcome): string | undefined {
+  switch (outcome.kind) {
+    case "paid": {
+      const link = liveWallet?.explorerUrl(outcome.txRef);
+      return `Done, paid ✅\ntx: ${outcome.txRef}${link ? `\n${link}` : ""}`;
+    }
+    case "cancelled":
+      return "Cancelled. Nothing moved.";
+    case "failed":
+      return `I couldn't complete the payment 🛑\n${outcome.reason}`;
+    case "nothing_pending":
+      // BR-C5: never infer which payment a bare "sí" meant.
+      return undefined;
+  }
 }
 
 /**
@@ -162,7 +221,9 @@ const teracDeliver = config.TERAC_API_KEY
 /** Ties escalation → consent → Terac recruit → review page → Dawid–Skene → coaching. */
 const reviewCoordinator = new ReviewCoordinator({
   deliver: teracDeliver,
-  coach: (chatId, message) => guardedReply(chatId, message),
+  coach: async (chatId, message) => {
+    await guardedReply(chatId, message);
+  },
 });
 
 const app = buildLinqApp({
@@ -197,10 +258,57 @@ const app = buildLinqApp({
       if (consent.reply) await guardedReply(phone, consent.reply);
       if (consent.consented || consent.reply) return; // consumed (launched or cancelled)
     }
+    // A payment awaiting confirmation: "sí" executes it, "no" drops it (BR-C2).
+    // Checked AFTER the review queue on purpose: if both were somehow pending, a
+    // "sí" resolving consent moves no money, while the reverse would (BR-C3).
+    if (pendingActions.has(phone)) {
+      const probe = await agentDeps.parse(text);
+      if (probe.intent === "confirm" || probe.intent === "cancel") {
+        const wallet = liveWallet;
+        if (probe.intent === "cancel" || !wallet) {
+          const reply = paymentReply(pendingActions.cancel(phone));
+          if (!wallet && probe.intent === "confirm") {
+            await guardedReply(phone, "My wallet isn't connected right now, so I didn't execute anything 🙈");
+          } else if (reply) {
+            await guardedReply(phone, reply);
+          }
+          return;
+        }
+        const reply = paymentReply(await pendingActions.resolve(phone, wallet));
+        if (reply) await guardedReply(phone, reply);
+        return;
+      }
+    }
+
     const outcome = await handleAgentMessage(text, fromVoice, agentDeps);
     // On escalation, stage the summary and wait for the user's 👍 (BR-T6).
     if (outcome.kind === "escalated") reviewCoordinator.stageConsent(phone, outcome.anon);
-    await guardedReply(phone, outcomeText(outcome));
+
+    const sentId = await guardedReply(phone, outcomeText(outcome));
+
+    // Stage AFTER the proposal is sent, so the pending carries that message's id
+    // and a tapback on it can resolve the payment (BR-C1/BR-C2).
+    if (outcome.kind === "confirm_required") {
+      pendingActions.stage(phone, outcome.action, sentId);
+    }
+  },
+  // Tapback on a proposal: 👍 pays, 👎 cancels, anything else is ignored (BR-C2).
+  onVote: async ({ messageId, reaction, action }) => {
+    const intent = reactionIntent(reaction, action);
+    if (intent === "ignore") return;
+
+    const chatId = pendingActions.chatForMessage(messageId);
+    if (chatId === undefined) return; // not one of our proposals, or expired (BR-C5)
+
+    const wallet = liveWallet;
+    if (intent === "cancel" || !wallet) {
+      const reply = paymentReply(pendingActions.cancel(chatId));
+      if (reply) await guardedReply(chatId, reply);
+      return;
+    }
+
+    const reply = paymentReply(await pendingActions.resolve(chatId, wallet));
+    if (reply) await guardedReply(chatId, reply);
   },
 });
 
@@ -211,6 +319,9 @@ registerReviewRoutes(app, {
     await reviewCoordinator.recordJudgment(pseudonym, judgment);
   },
 });
+
+// Personal dashboard page (BR-D2): tokenized link the user opens from iMessage.
+registerDashboardRoutes(app, { resolve: (token) => dashboardLinks.resolve(token) });
 
 app
   .listen({ port: config.PORT, host: "0.0.0.0" })

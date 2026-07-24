@@ -77,7 +77,7 @@ describe("handleAgentMessage (end-to-end loop)", () => {
     const a = action("pay", { type: "payment", params: { amount: 5_000, recipient: "ana" } });
     const out = await handleAgentMessage("audio", true, deps(a));
     expect(out.kind).toBe("confirm_required");
-    if (out.kind === "confirm_required") expect(out.text).toContain("nota de voz");
+    if (out.kind === "confirm_required") expect(out.text).toContain("voice note");
   });
 
   test("BR-G2 — a risky payment escalates with an anonymized preview", async () => {
