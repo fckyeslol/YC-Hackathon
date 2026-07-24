@@ -11,7 +11,7 @@ import { handleAgentMessage, type AgentOutcome, type OrchestratorDeps } from "..
 import { RETRY_PROMPT, transcribeVoice, type Transcriber } from "../agent/voice.js";
 import type { DynamicWallet } from "../clients/dynamic.js";
 import { buildDynamicPorts, dynamicConfigured } from "../clients/dynamicPorts.js";
-import { makeClaudeClassifier } from "../clients/runwareBrain.js";
+import { makeClaudeClassifier, makeClaudeLeakScan, makeClaudeConversation } from "../clients/runwareBrain.js";
 import { makeGroqTranscriber } from "../clients/groqStt.js";
 import { terac } from "../clients/terac.js";
 import { makeTeracDeliver } from "../escalation/teracDelivery.js";
@@ -54,6 +54,17 @@ const notConfiguredLlm: LlmClassifier = async () => {
 const classify: LlmClassifier = config.RUNWARE_API_KEY
   ? makeClaudeClassifier({ apiKey: config.RUNWARE_API_KEY, model: config.RUNWARE_LLM_MODEL, baseUrl: config.RUNWARE_BASE_URL })
   : notConfiguredLlm;
+
+/**
+ * The leak-check LLM layer (BR-A5): an adversarial auditor that runs ON TOP of
+ * the deterministic regex floor before any summary is staged for a reviewer.
+ * Fail-closed — if the auditor is down it returns a blocking hit. Without
+ * RUNWARE_API_KEY it is absent and only the regex floor runs (which still
+ * enforces BR-A5's deterministic layer). See ADR-006.
+ */
+const leakScan = config.RUNWARE_API_KEY
+  ? makeClaudeLeakScan({ apiKey: config.RUNWARE_API_KEY, model: config.RUNWARE_LLM_MODEL, baseUrl: config.RUNWARE_BASE_URL })
+  : undefined;
 
 /**
  * Speech-to-text: Groq Whisper when GROQ_API_KEY is set, else undefined → the
@@ -102,9 +113,23 @@ export function agentWallet(): DynamicWallet | undefined {
   return liveWallet;
 }
 
+/**
+ * Conversational adapter (spec: conversation.spec.md): natural small-talk +
+ * factual data answers grounded in the user's own summary. Absent without
+ * RUNWARE_API_KEY → the orchestrator degrades to a canned welcome / structured
+ * answer (BR-CV4). Read-only: never moves money or reroutes advice (BR-CV3).
+ */
+const conversation = config.RUNWARE_API_KEY
+  ? makeClaudeConversation({ apiKey: config.RUNWARE_API_KEY, model: config.RUNWARE_LLM_MODEL, baseUrl: config.RUNWARE_BASE_URL })
+  : undefined;
+
 const agentDeps: OrchestratorDeps = {
   parse: (t) => parseIntent(t, { classify }),
   ledger: delegatingLedger,
+  // Live LLM leak auditor when configured; absent → regex floor only (BR-A5).
+  ...(leakScan ? { llmLeakScan: leakScan } : {}),
+  // Live conversational layer when configured; absent → canned welcome (BR-CV4).
+  ...(conversation ? { conversation } : {}),
 };
 
 /** Turn an outcome into the user-facing text to send (preview/confirm/reply). */
@@ -212,7 +237,7 @@ app
       console.warn("[verdict] Dynamic not configured (DYNAMIC_ENVIRONMENT_ID / _AGENT_SIGNING_TOKEN / _WALLET_PASSWORD) — ledger stubbed");
     }
     console.log(
-      `[verdict] brain LLM: ${config.RUNWARE_API_KEY ? `Claude via Runware (${config.RUNWARE_LLM_MODEL})` : "STUB (set RUNWARE_API_KEY)"} · voice STT: ${config.GROQ_API_KEY ? `Groq (${config.GROQ_STT_MODEL})` : "STUB (set GROQ_API_KEY)"}`,
+      `[verdict] brain LLM: ${config.RUNWARE_API_KEY ? `Claude via Runware (${config.RUNWARE_LLM_MODEL})` : "STUB (set RUNWARE_API_KEY)"} · leak-check: ${config.RUNWARE_API_KEY ? "LLM + regex" : "regex-only (set RUNWARE_API_KEY for the LLM layer)"} · voice STT: ${config.GROQ_API_KEY ? `Groq (${config.GROQ_STT_MODEL})` : "STUB (set GROQ_API_KEY)"}`,
     );
   })
   .catch((err) => {

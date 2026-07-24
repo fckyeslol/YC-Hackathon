@@ -2,6 +2,24 @@ import type { Action } from "./types.js";
 import type { Summary } from "../anonymization/types.js";
 
 /**
+ * Conversational port (spec: conversation.spec.md). READ-ONLY by contract: it
+ * only produces text and NEVER emits a money action, confirms a payment, or gives
+ * financial advice — advice keeps routing to the guardrail → human escalation
+ * (BR-CV3 / BR-G3). The live adapter is Claude via Runware; without a key the
+ * orchestrator degrades to a canned welcome (BR-CV4), never crashing.
+ */
+export interface ConversationPort {
+  /** Natural small-talk: greet, explain capabilities. No financial advice (BR-CV1). */
+  chat(userText: string): Promise<string>;
+  /**
+   * Natural-language answer to a FACTUAL question, grounded ONLY in the user's
+   * own `Summary` (their data, full detail — never the anonymized reviewer path).
+   * Must not invent figures absent from the summary (BR-CV2).
+   */
+  answerFromData(userText: string, summary: Summary): Promise<string>;
+}
+
+/**
  * Outbound ports the agent loop depends on. These are CONTRACTS, not
  * implementations — the live adapters (Dynamic wallet, financial ledger) are
  * wired at the composition root. Keeping them as interfaces lets the whole loop

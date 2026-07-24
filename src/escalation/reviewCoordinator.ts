@@ -2,6 +2,8 @@ import type { AnonymizedSummary } from "../anonymization/types.js";
 import type { Poll, Vote } from "../store/types.js";
 import { computeConsensus } from "../services/consensus.js";
 import { leakCheck } from "../anonymization/leakCheck.js";
+import { escalateToReviewers } from "./escalate.js";
+import { ConsentToken } from "./consent.js";
 import type { ReviewCard } from "../server/reviewPage.js";
 
 /**
@@ -93,6 +95,26 @@ export class ReviewCoordinator {
     if (!AFFIRMATIVE.test(replyText)) return { consented: false };
 
     this.pendingByChat.delete(chatId);
+
+    // Structural gate (BR-A8): the ONLY sanctioned path to a reviewer is
+    // escalateToReviewers — it re-runs leakCheck (fail-closed floor) and verifies
+    // a ConsentToken minted for THIS exact summary before calling deliver. The
+    // user's 👍 IS the consent (BR-A6). A leak block is terminal; a recruitment
+    // failure is best-effort (fail-open, no PII risk — the gate already passed).
+    const consent = ConsentToken.approve(anon);
+    let leakBlocked = false;
+    try {
+      const result = await escalateToReviewers(anon, consent, this.deps.deliver);
+      leakBlocked = !result.sent && result.reason === "leak_blocked";
+    } catch {
+      // deliver threw AFTER the gate passed (e.g. Terac API down): swallow so the
+      // loop stays demoable — the review page opens regardless.
+    }
+    if (leakBlocked) {
+      return { consented: false, reply: "Por seguridad no puedo compartir tu resumen ahora. Probemos de otra forma." };
+    }
+
+    // Gate passed → open the local review session so /review/:pseudonym resolves.
     this.sessionsByPseudonym.set(anon.reviewPseudonym, {
       chatId,
       poll: {
@@ -107,14 +129,6 @@ export class ReviewCoordinator {
       raterSeq: 0,
       closed: false,
     });
-
-    // Best-effort recruit: a live Terac failure must not break the loop — the
-    // review page is already open, so the flow is demoable regardless.
-    try {
-      await this.deps.deliver(anon);
-    } catch {
-      // swallow: fail-open on RECRUITMENT is fine (no PII risk); the gate already ran.
-    }
 
     return { consented: true, reply: "Listo, le pedí criterio a revisores reales (anónimo). Te aviso apenas haya consenso. 🙌" };
   }

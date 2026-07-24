@@ -1,5 +1,6 @@
 import type { LlmClassifier } from "../agent/types.js";
-import type { AnonymizedSummary, LeakHit } from "../anonymization/types.js";
+import type { ConversationPort } from "../agent/ports.js";
+import type { AnonymizedSummary, LeakHit, Summary } from "../anonymization/types.js";
 
 /**
  * Live "brain" adapters — Anthropic Claude models reached through Runware's
@@ -167,5 +168,51 @@ export function makeClaudeLeakScan(
     } catch {
       return [{ gate: "G-LLM", evidence: "llm-scan-failed", why: "leak-check LLM no disponible; se bloquea el envío (fail-closed)" }];
     }
+  };
+}
+
+// --- Conversational layer (spec: conversation.spec.md) ---
+
+const CHAT_SYSTEM = `Sos Verdict, un asesor financiero que vive en iMessage y le habla a un usuario colombiano. Estás charlando (saludo o charla casual).
+
+- Respondé cálido, natural, en español (CO), breve (máx ~2 frases).
+- Podés presentarte y explicar qué sabés hacer: mover plata (enviar/dividir/cambiar), mostrar en qué gasta, y darle consejo revisado por humanos reales.
+- NUNCA des consejo financiero vos mismo ni prometas mover dinero en este mensaje: si el usuario quiere eso, invitalo a pedírtelo y otra parte del sistema lo maneja.
+- Sin markdown, sin listas largas. Un emoji como mucho.`;
+
+/**
+ * Compact, PII-light projection of the user's OWN summary for the conversational
+ * answer. Deliberately omits identity and raw transactions (not needed to answer
+ * cost questions; keeps the model grounded on aggregates only — BR-CV2/BR-CV6).
+ */
+function projectSummary(s: Summary): string {
+  return JSON.stringify({
+    categoryTotals: s.categoryTotals,
+    trendsVsPrior: s.trendsVsPrior,
+    behaviorFlags: s.behaviorFlags,
+    totalSpend: s.totalSpend,
+    monthlyIncome: s.monthlyIncome,
+    exactBalance: s.exactBalance,
+  });
+}
+
+const DATA_SYSTEM = `Sos Verdict respondiéndole al PROPIO usuario sobre SUS finanzas. Recibís un resumen JSON con SUS datos.
+
+- Respondé en español (CO), claro y conversacional, la pregunta del usuario usando SOLO los números del resumen.
+- Es la data del propio usuario, podés dar detalle completo (montos, categorías, %).
+- PROHIBIDO inventar cifras que no estén en el resumen. Si el dato no está, decí que todavía no lo tenés (no lo adivines).
+- Podés señalar un patrón factual ("comida es tu mayor gasto"), pero NO des consejo de qué hacer: para eso hay revisores humanos.
+- Breve (2-4 frases). Sin markdown.`;
+
+/**
+ * Live conversational adapter (Claude via Runware). READ-ONLY: it only returns
+ * text. The orchestrator wraps both calls fail-closed (BR-CV4), so a thrown error
+ * here degrades to a canned welcome / the structured answer — it never crashes.
+ */
+export function makeClaudeConversation(opts: BrainOptions): ConversationPort {
+  return {
+    chat: (userText: string) => chat(opts, CHAT_SYSTEM, userText),
+    answerFromData: (userText: string, summary: Summary) =>
+      chat(opts, DATA_SYSTEM, `Resumen (JSON): ${projectSummary(summary)}\n\nPregunta del usuario: ${userText}`),
   };
 }

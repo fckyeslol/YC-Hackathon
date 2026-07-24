@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { extractJson, parseLeakHits, makeClaudeClassifier, makeClaudeLeakScan } from "./runwareBrain.js";
-import type { AnonymizedSummary } from "../anonymization/types.js";
+import { extractJson, parseLeakHits, makeClaudeClassifier, makeClaudeLeakScan, makeClaudeConversation } from "./runwareBrain.js";
+import type { AnonymizedSummary, Summary } from "../anonymization/types.js";
 
 /** Minimal OpenAI-compatible chat response for the injected fetch. */
 function chatResponse(content: string, ok = true, status = 200): Response {
@@ -96,5 +96,40 @@ describe("makeClaudeLeakScan (fail-closed)", () => {
     const hits = await scan(anon);
     expect(hits.length).toBe(1);
     expect(hits[0]!.evidence).toBe("llm-scan-failed");
+  });
+});
+
+describe("makeClaudeConversation (spec: conversation.spec.md)", () => {
+  const summary: Summary = {
+    identity: { name: "Mateo", cedula: "1140891234" },
+    categoryTotals: [{ category: "comida", total: 60_000 }],
+    trendsVsPrior: [],
+    behaviorFlags: [],
+    totalSpend: 100_000,
+    monthlyIncome: 5_000_000,
+    exactBalance: 42_000,
+    rawTransactions: [{ id: "t1", merchant: "Super", amount: 60_000, currency: "COP", date: "2026-07-01", category: "comida" }],
+  };
+
+  it("chat() returns the model's small-talk text", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(chatResponse("¡Hola! Puedo mover tu plata 💸"));
+    const conv = makeClaudeConversation({ ...OPTS, fetchImpl });
+    expect(await conv.chat("hola")).toBe("¡Hola! Puedo mover tu plata 💸");
+  });
+
+  it("answerFromData() grounds on aggregates and OMITS identity + raw transactions (BR-CV2/BR-CV6)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(chatResponse("Comida es tu mayor gasto."));
+    const conv = makeClaudeConversation({ ...OPTS, fetchImpl });
+
+    const answer = await conv.answerFromData("¿en qué gasté?", summary);
+
+    expect(answer).toBe("Comida es tu mayor gasto.");
+    const body = JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string);
+    const userMsg = body.messages[1].content as string;
+    expect(userMsg).toContain("comida");
+    // The projection must not leak identity or raw transactions into the prompt.
+    expect(userMsg).not.toContain("Mateo");
+    expect(userMsg).not.toContain("1140891234");
+    expect(userMsg).not.toContain("Super");
   });
 });

@@ -1,9 +1,17 @@
 import { describe, test, expect, vi } from "vitest";
-import { handleAgentMessage, completeConsentedEscalation, type OrchestratorDeps } from "./orchestrator.js";
+import { handleAgentMessage, completeConsentedEscalation, WELCOME, NOT_UNDERSTOOD, type OrchestratorDeps } from "./orchestrator.js";
 import type { Action, Intent } from "./types.js";
-import type { LedgerPort } from "./ports.js";
+import type { LedgerPort, ConversationPort } from "./ports.js";
 import { computeSummary } from "../anonymization/anonymize.js";
-import type { AnonymizedSummary, FinancialProfile } from "../anonymization/types.js";
+import type { AnonymizedSummary, FinancialProfile, Summary } from "../anonymization/types.js";
+
+function fakeConversation(over: Partial<ConversationPort> = {}): ConversationPort {
+  return {
+    chat: async () => "¡Hola! Soy tu asesor 💸",
+    answerFromData: async () => "Comida es tu mayor gasto.",
+    ...over,
+  };
+}
 
 const PROFILE: FinancialProfile = {
   identity: { name: "Mateo", cedula: "1140891234" },
@@ -90,6 +98,103 @@ describe("handleAgentMessage (end-to-end loop)", () => {
       leakOpts: { extraScan: () => [{ gate: "G5", evidence: "x", why: "reidentificable" }] },
     }));
     expect(out.kind).toBe("blocked");
+  });
+
+  test("BR-A5 — the async LLM audit layer blocks an otherwise-clean summary (fail-closed)", async () => {
+    const a = action("advice", { type: "advice", params: { question: "¿cancelo todo?" }, riskSignals: { amountBucket: "bajo", novelCounterparty: false, volatileSwap: false, modelConfidence: 0.4 } });
+    const llmLeakScan = vi.fn(async () => [{ gate: "G-LLM", evidence: "huella única", why: "reidentificable" }]);
+    const out = await handleAgentMessage("¿debería cancelar todo?", false, deps(a, { llmLeakScan }));
+    expect(out.kind).toBe("blocked");
+    expect(llmLeakScan).toHaveBeenCalledOnce();
+  });
+
+  test("BR-A5 — a clean LLM audit lets the escalation through", async () => {
+    const a = action("advice", { type: "advice", params: { question: "¿cancelo todo?" }, riskSignals: { amountBucket: "bajo", novelCounterparty: false, volatileSwap: false, modelConfidence: 0.4 } });
+    const llmLeakScan = vi.fn(async () => []);
+    const out = await handleAgentMessage("¿debería cancelar todo?", false, deps(a, { llmLeakScan }));
+    expect(out.kind).toBe("escalated");
+    expect(llmLeakScan).toHaveBeenCalledOnce();
+  });
+
+  // --- conversational layer (spec: conversation.spec.md) ---
+
+  test("BR-CV1/AC1 — smalltalk uses the conversation adapter, not the 'no entendí' line", async () => {
+    const chat = vi.fn(async () => "¡Hola! puedo mover tu plata 💸");
+    const out = await handleAgentMessage("hola", false, deps(action("smalltalk", { rawText: "hola" }), { conversation: fakeConversation({ chat }) }));
+    expect(out).toEqual({ kind: "reply", text: "¡Hola! puedo mover tu plata 💸" });
+    expect(chat).toHaveBeenCalledWith("hola");
+  });
+
+  test("BR-CV4/AC5 — smalltalk without an adapter falls back to WELCOME (never 'no entendí')", async () => {
+    const out = await handleAgentMessage("hola", false, deps(action("smalltalk")));
+    expect(out).toEqual({ kind: "reply", text: WELCOME });
+    expect((out as { text: string }).text).not.toBe(NOT_UNDERSTOOD);
+  });
+
+  test("BR-CV4 — smalltalk falls back to WELCOME if the adapter throws (fail-closed soft)", async () => {
+    const chat = vi.fn(async () => {
+      throw new Error("brain down");
+    });
+    const out = await handleAgentMessage("hola", false, deps(action("smalltalk"), { conversation: fakeConversation({ chat }) }));
+    expect(out).toEqual({ kind: "reply", text: WELCOME });
+  });
+
+  test("BR-CV5 — unknown keeps the 'no entendí' reply, distinct from smalltalk", async () => {
+    const out = await handleAgentMessage("asdkfj", false, deps(action("unknown")));
+    expect(out).toEqual({ kind: "reply", text: NOT_UNDERSTOOD });
+  });
+
+  test("BR-CV2/AC2 — a data question is answered from the user's OWN summary", async () => {
+    const answerFromData = vi.fn(async (_text: string, _summary: Summary) => "Comida es tu mayor gasto: 60%.");
+    const buildSummary = vi.fn(async () => computeSummary(PROFILE));
+    const out = await handleAgentMessage(
+      "¿en qué se me va la plata?",
+      false,
+      deps(action("spending_insight", { rawText: "¿en qué se me va la plata?" }), {
+        ledger: fakeLedger({ buildSummary }),
+        conversation: fakeConversation({ answerFromData }),
+      }),
+    );
+    expect(out).toEqual({ kind: "answer", text: "Comida es tu mayor gasto: 60%." });
+    expect(buildSummary).toHaveBeenCalled();
+    // grounded: the user's summary is what the adapter received (BR-CV2).
+    expect(answerFromData.mock.calls[0]![1]).toMatchObject({ categoryTotals: expect.anything() });
+  });
+
+  test("BR-CV4 — a data question falls back to structured answerQuery if the adapter throws", async () => {
+    const answerQuery = vi.fn(async () => "Gastaste 60% en comida.");
+    const answerFromData = vi.fn(async () => {
+      throw new Error("brain down");
+    });
+    const out = await handleAgentMessage(
+      "¿cuánto gasté?",
+      false,
+      deps(action("spending_insight"), { ledger: fakeLedger({ answerQuery }), conversation: fakeConversation({ answerFromData }) }),
+    );
+    expect(out).toEqual({ kind: "answer", text: "Gastaste 60% en comida." });
+    expect(answerQuery).toHaveBeenCalled();
+  });
+
+  test("BR-CV3/AC4 — advice still escalates to humans even with a conversation adapter", async () => {
+    const chat = vi.fn(async () => "x");
+    const answerFromData = vi.fn(async () => "x");
+    const a = action("advice", {
+      type: "advice",
+      params: { question: "¿cancelo Netflix?" },
+      riskSignals: { amountBucket: "bajo", novelCounterparty: false, volatileSwap: false, modelConfidence: 0.4 },
+    });
+    const out = await handleAgentMessage("¿debería cancelar Netflix?", false, deps(a, { conversation: fakeConversation({ chat, answerFromData }) }));
+    expect(out.kind).toBe("escalated");
+    expect(chat).not.toHaveBeenCalled();
+    expect(answerFromData).not.toHaveBeenCalled();
+  });
+
+  test("BR-CV3/AC6 — money still requires confirmation even with a conversation adapter", async () => {
+    const chat = vi.fn(async () => "x");
+    const a = action("pay", { type: "payment", params: { amount: 5_000, recipient: "ana" } });
+    const out = await handleAgentMessage("mándale 5000 a ana", false, deps(a, { conversation: fakeConversation({ chat }) }));
+    expect(out.kind).toBe("confirm_required");
+    expect(chat).not.toHaveBeenCalled();
   });
 
   test("completeConsentedEscalation delivers through the structural gate", async () => {

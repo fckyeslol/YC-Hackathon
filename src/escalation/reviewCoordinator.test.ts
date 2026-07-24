@@ -61,6 +61,26 @@ describe("ReviewCoordinator (terac-review E2E glue)", () => {
     expect(out.consented).toBe(true); // review page still open; no PII risk
   });
 
+  test("the structural gate blocks a leaky summary at consent time — deliver never runs (BR-A8)", async () => {
+    const { coord, deliver } = make();
+    const leaky: AnonymizedSummary = {
+      reviewPseudonym: "Revisor-anonimo-deadbeef0001",
+      categoryBreakdown: [{ category: "comida", pct: 100 }],
+      trendsVsPrior: [],
+      behaviorFlags: ["pago a Juan Pérez"], // trips the leakCheck floor
+      amountBuckets: [],
+    };
+    coord.stageConsent("chat-9", leaky);
+
+    const out = await coord.maybeConsent("chat-9", "sí");
+
+    expect(out.consented).toBe(false);
+    expect(out.reply).toMatch(/seguridad/i);
+    expect(deliver).not.toHaveBeenCalled();
+    // No session opened for a blocked summary.
+    expect(coord.reviewCard("Revisor-anonimo-deadbeef0001")).toBeUndefined();
+  });
+
   test("judgments accumulate and coach the user once quorum is reached (BR-T4/T5)", async () => {
     const { coord, coach } = make();
     coord.stageConsent("chat-1", ANON);

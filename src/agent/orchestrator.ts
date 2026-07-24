@@ -1,6 +1,6 @@
 import type { Action } from "./types.js";
-import type { LedgerPort } from "./ports.js";
-import type { AnonymizedSummary } from "../anonymization/types.js";
+import type { LedgerPort, ConversationPort } from "./ports.js";
+import type { AnonymizedSummary, LeakHit } from "../anonymization/types.js";
 import { classify } from "../guardrail/classify.js";
 import { anonymize } from "../anonymization/anonymize.js";
 import { leakCheck, type LeakCheckOptions } from "../anonymization/leakCheck.js";
@@ -31,8 +31,37 @@ export type AgentOutcome =
 export interface OrchestratorDeps {
   parse: (text: string) => Promise<Action>;
   ledger: LedgerPort;
-  /** Optional extra leak scanner (LLM layer). Additive, fail-closed. */
+  /** Optional synchronous extra-scan injection (used by tests). Additive, fail-closed. */
   leakOpts?: LeakCheckOptions;
+  /**
+   * Optional async LLM leak auditor (BR-A5 "regex + LLM"). `leakCheck`'s
+   * `extraScan` port is synchronous (ADR-006), so we pre-resolve this promise
+   * here and fold its hits into the check. Additive-only and fail-closed:
+   * `makeClaudeLeakScan` returns a blocking hit when the auditor is unavailable.
+   */
+  llmLeakScan?: (anon: AnonymizedSummary) => Promise<readonly LeakHit[]>;
+  /**
+   * Optional conversational adapter (spec: conversation.spec.md). When present,
+   * small-talk gets a natural reply and factual data questions are answered in
+   * natural language grounded in the user's own summary. Absent → fail-closed to
+   * a canned welcome / the structured `answerQuery` (BR-CV4). Read-only: never
+   * touches money or advice routing (BR-CV3).
+   */
+  conversation?: ConversationPort;
+}
+
+/** Friendly canned welcome when no conversational adapter is available (BR-CV4). */
+export const WELCOME =
+  "¡Hola! 👋 Soy tu asesor financiero. Puedo mover tu plata, mostrarte en qué gastás y darte consejo revisado por humanos reales. ¿Qué necesitás?";
+
+/** Distinct from small-talk: we genuinely didn't understand (BR-CV5). */
+export const NOT_UNDERSTOOD = "No te entendí del todo 🙏 ¿me lo explicás de otra forma?";
+
+/** Fold pre-resolved LLM hits into the (optional) sync leak options. Additive-only. */
+function composeLeakOpts(base: LeakCheckOptions | undefined, llmHits: readonly LeakHit[]): LeakCheckOptions {
+  if (llmHits.length === 0) return base ?? {};
+  const baseScan = base?.extraScan;
+  return { extraScan: (scanText, anon) => [...(baseScan?.(scanText, anon) ?? []), ...llmHits] };
 }
 
 const MONEY_INTENTS = new Set(["pay", "split", "swap"]);
@@ -46,15 +75,36 @@ export async function handleAgentMessage(
   const action = await deps.parse(text);
   const { intent } = action;
 
-  if (intent === "unknown" || intent === "smalltalk") {
-    return { kind: "reply", text: "No te entendí del todo 🙏 ¿me lo explicás de otra forma?" };
+  // Small-talk → natural conversation (BR-CV1), distinct from unknown (BR-CV5).
+  if (intent === "smalltalk") {
+    if (deps.conversation) {
+      try {
+        return { kind: "reply", text: await deps.conversation.chat(action.rawText) };
+      } catch {
+        // Fail-closed soft: a down brain still greets, never "no entendí" (BR-CV4).
+      }
+    }
+    return { kind: "reply", text: WELCOME };
+  }
+  if (intent === "unknown") {
+    return { kind: "reply", text: NOT_UNDERSTOOD };
   }
   if (intent === "confirm" || intent === "cancel") {
     // pending_action resolution (BR-P7) is wired at the tapback layer; ack here.
     return { kind: "reply", text: intent === "confirm" ? "Dale, confirmado ✅" : "Listo, lo cancelo." };
   }
   if (QUERY_INTENTS.has(intent)) {
-    // Read-only → auto (BR-G1). No money moves.
+    // Read-only → auto (BR-G1). No money moves. When a conversational adapter is
+    // present, answer in natural language grounded in the user's OWN summary
+    // (their data, full detail — BR-CV2/BR-CV6); else the structured answer.
+    if (deps.conversation) {
+      try {
+        const summary = await deps.ledger.buildSummary();
+        return { kind: "answer", text: await deps.conversation.answerFromData(action.rawText, summary) };
+      } catch {
+        // Fail-closed soft: fall back to the structured answer (BR-CV4).
+      }
+    }
     return { kind: "answer", text: await deps.ledger.answerQuery(action) };
   }
 
@@ -68,7 +118,10 @@ export async function handleAgentMessage(
   if (decision.decision === "escalate") {
     const summary = await deps.ledger.buildSummary();
     const anon = anonymize(summary); // mints its own opaque reviewId (BR-A4)
-    const leak = leakCheck(anon, deps.leakOpts ?? {});
+    // BR-A5 "regex + LLM": pre-resolve the async LLM audit (extraScan is sync,
+    // ADR-006) and fold it into the deterministic floor. Both layers fail-closed.
+    const llmHits = deps.llmLeakScan ? await deps.llmLeakScan(anon) : [];
+    const leak = leakCheck(anon, composeLeakOpts(deps.leakOpts, llmHits));
     if (!leak.ok) {
       // Fail-closed (BR-A5): never send a leaky summary; degrade safely.
       return { kind: "blocked", text: "Por seguridad no puedo compartir tu resumen ahora. Probemos de otra forma." };
