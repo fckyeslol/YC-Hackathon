@@ -11,17 +11,20 @@ const schema = z.object({
   LINQ_WEBHOOK_SECRET: z.string().min(1).optional(),
 
   /**
-   * Anthropic key for the "brain" (intent parser, BR-P1) and the intelligent
-   * leak-check layer (BR-A5). Absent → the LLM adapter stays a fail-closed stub
-   * and parseIntent falls back to `unknown` (never guesses money).
+   * Runware key for the "brain" — Claude models reached through Runware's
+   * OpenAI-compatible endpoint (intent parser BR-P1 + leak-check LLM BR-A5).
+   * Absent → the LLM adapter stays a fail-closed stub and parseIntent falls
+   * back to `unknown` (never guesses money).
    */
-  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  RUNWARE_API_KEY: z.string().min(1).optional(),
+  /** Runware OpenAI-compatible base URL (chat completions live at `${base}/chat/completions`). */
+  RUNWARE_BASE_URL: z.string().url().default("https://api.runware.ai/v1"),
   /**
-   * Claude model for the brain. Defaults to Opus 4.8 (Anthropic guidance).
-   * For this classification/leak-check workload, `claude-haiku-4-5` cuts cost
-   * ~5x — set it here if you want to stretch the hackathon budget.
+   * Claude model id in Runware's catalog. Default Haiku 4.5: fast + cheap, right
+   * for classification on a $35 budget. Bump to `anthropic-claude-sonnet-4-6` or
+   * `anthropic-claude-opus-4-8` for more capability.
    */
-  ANTHROPIC_MODEL: z.string().default("claude-opus-4-8"),
+  RUNWARE_LLM_MODEL: z.string().default("anthropic-claude-haiku-4-5"),
 
   /**
    * Groq key for speech-to-text (voice notes, BR-V2). Absent → voice stays a
@@ -69,6 +72,11 @@ const schema = z.object({
   DYNAMIC_COP_PER_USDC: z.coerce.number().positive().default(4000),
   /** Hard per-transaction ceiling in USDC (BR-D10). */
   DYNAMIC_MAX_USDC_PER_TX: z.coerce.number().positive().default(5),
+  /**
+   * Where the agent's wallet metadata is remembered. Losing this file makes the
+   * next boot create a NEW empty wallet and strand the funds on the old address.
+   */
+  DYNAMIC_WALLET_STORE_PATH: z.string().default("./data/dynamic-wallet.json"),
 });
 
 const parsed = schema.safeParse(process.env);

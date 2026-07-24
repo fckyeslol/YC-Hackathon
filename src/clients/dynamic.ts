@@ -278,6 +278,41 @@ export class DynamicLedger implements LedgerPort {
   }
 }
 
+/**
+ * Persists the agent's wallet metadata so the SAME wallet is reused across restarts.
+ *
+ * This is not an optimization. `createWalletAccount()` is not idempotent, and the
+ * environment allows multiple embedded wallets per chain — so without this, every
+ * boot would silently mint a NEW empty wallet at a new address and strand the funds
+ * on the old one. The metadata is non-sensitive (ids + address); the MPC key shares
+ * live with Dynamic, guarded by the wallet password.
+ */
+export interface WalletMetadataStore {
+  load(): Promise<unknown | undefined>;
+  save(metadata: unknown): Promise<void>;
+}
+
+/** Default store: a JSON file. Gitignore its directory. */
+export function fileWalletMetadataStore(path: string): WalletMetadataStore {
+  return {
+    load: async () => {
+      const { readFile } = await import("node:fs/promises");
+      try {
+        return JSON.parse(await readFile(path, "utf8")) as unknown;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+      }
+    },
+    save: async (metadata) => {
+      const { mkdir, writeFile } = await import("node:fs/promises");
+      const { dirname } = await import("node:path");
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, JSON.stringify(metadata, null, 2));
+    },
+  };
+}
+
 export interface CreateSignerOptions {
   readonly environmentId: string;
   readonly agentSigningToken: `0x${string}`;
@@ -285,6 +320,8 @@ export interface CreateSignerOptions {
   readonly appOrigin: string;
   readonly rpcUrl: string;
   readonly usdcAddress: `0x${string}`;
+  /** Where the wallet metadata is remembered. Omit → wallet is created every time. */
+  readonly metadataStore?: WalletMetadataStore;
 }
 
 /**
@@ -328,11 +365,23 @@ export async function createDynamicSigner(opts: CreateSignerOptions): Promise<On
     getSessionSignature: (message: string) => signSessionMessage(message, privateKeyJwk),
   });
 
-  const { walletMetadata } = await client.createWalletAccount({
-    thresholdSignatureScheme: ThresholdSignatureScheme.TWO_OF_TWO,
-    password: opts.walletPassword,
-    backUpToDynamic: true,
-  });
+  // Reuse the existing wallet when we have it; only create one the first time.
+  const stored = await opts.metadataStore?.load();
+  let walletMetadata: Awaited<ReturnType<typeof client.createWalletAccount>>["walletMetadata"];
+
+  if (stored !== undefined) {
+    walletMetadata = stored as typeof walletMetadata;
+    console.log(`[dynamic] reusing wallet ${(walletMetadata as { accountAddress: string }).accountAddress}`);
+  } else {
+    const created = await client.createWalletAccount({
+      thresholdSignatureScheme: ThresholdSignatureScheme.TWO_OF_TWO,
+      password: opts.walletPassword,
+      backUpToDynamic: true,
+    });
+    walletMetadata = created.walletMetadata;
+    await opts.metadataStore?.save(walletMetadata);
+    console.log(`[dynamic] created wallet ${walletMetadata.accountAddress}`);
+  }
 
   const walletClient = (
     await client.getWalletClient({

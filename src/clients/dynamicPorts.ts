@@ -12,6 +12,7 @@ import {
   DynamicLedger,
   DynamicWallet,
   createDynamicSigner,
+  fileWalletMetadataStore,
   parsePayees,
   type OnchainSigner,
 } from "./dynamic.js";
@@ -73,6 +74,8 @@ export async function buildDynamicPorts(
     appOrigin: config.DYNAMIC_APP_ORIGIN,
     rpcUrl: config.DYNAMIC_RPC_URL,
     usdcAddress: config.DYNAMIC_USDC_ADDRESS as `0x${string}`,
+    // Without this the wallet is re-created on every boot and the funds strand.
+    metadataStore: fileWalletMetadataStore(config.DYNAMIC_WALLET_STORE_PATH),
   });
 
   const wallet = new DynamicWallet({

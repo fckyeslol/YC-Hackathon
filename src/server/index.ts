@@ -13,6 +13,10 @@ import type { DynamicWallet } from "../clients/dynamic.js";
 import { buildDynamicPorts, dynamicConfigured } from "../clients/dynamicPorts.js";
 import { makeAnthropicClassifier } from "../clients/anthropicBrain.js";
 import { makeGroqTranscriber } from "../clients/groqStt.js";
+import { terac } from "../clients/terac.js";
+import { makeTeracDeliver } from "../escalation/teracDelivery.js";
+import { ReviewCoordinator } from "../escalation/reviewCoordinator.js";
+import { registerReviewRoutes } from "./reviewPage.js";
 
 /**
  * Verdict server bootstrap: Linq inbound webhook + compliance state + the agent
@@ -117,6 +121,24 @@ function outcomeText(outcome: AgentOutcome): string {
   }
 }
 
+// --- Terac human review (spec terac-review) ---
+
+const TERAC_PROJECT = "verdict";
+const REVIEW_PANEL = 3;
+
+/** Best-effort recruit: the review page opens regardless; a live Terac failure is swallowed. */
+const teracDeliver = config.TERAC_API_KEY
+  ? makeTeracDeliver(terac, { projectName: TERAC_PROJECT, numReviewers: REVIEW_PANEL, publicUrl: config.PUBLIC_URL })
+  : async () => {
+      console.warn("[verdict] Terac not configured — review recruit skipped");
+    };
+
+/** Ties escalation → consent → Terac recruit → review page → Dawid–Skene → coaching. */
+const reviewCoordinator = new ReviewCoordinator({
+  deliver: teracDeliver,
+  coach: (chatId, message) => guardedReply(chatId, message),
+});
+
 const app = buildLinqApp({
   ...(config.LINQ_WEBHOOK_SECRET ? { secret: config.LINQ_WEBHOOK_SECRET } : {}),
   state,
@@ -143,8 +165,24 @@ const app = buildLinqApp({
       text = voice.text;
       fromVoice = true;
     }
+    // A review awaiting the user's consent: a "sí"/"no" here resolves it (BR-T6).
+    if (reviewCoordinator.hasPending(phone)) {
+      const consent = await reviewCoordinator.maybeConsent(phone, text);
+      if (consent.reply) await guardedReply(phone, consent.reply);
+      if (consent.consented || consent.reply) return; // consumed (launched or cancelled)
+    }
     const outcome = await handleAgentMessage(text, fromVoice, agentDeps);
+    // On escalation, stage the summary and wait for the user's 👍 (BR-T6).
+    if (outcome.kind === "escalated") reviewCoordinator.stageConsent(phone, outcome.anon);
     await guardedReply(phone, outcomeText(outcome));
+  },
+});
+
+// Reviewer-facing page (BR-T2): Terac points participants at /review/:pseudonym.
+registerReviewRoutes(app, {
+  getReview: (pseudonym) => reviewCoordinator.reviewCard(pseudonym),
+  submitJudgment: async (pseudonym, judgment) => {
+    await reviewCoordinator.recordJudgment(pseudonym, judgment);
   },
 });
 

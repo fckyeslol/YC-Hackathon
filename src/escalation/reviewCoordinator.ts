@@ -15,8 +15,10 @@ import type { ReviewCard } from "../server/reviewPage.js";
  * that needs no message tracking. Reviewers are resolved by rotating pseudonym.
  */
 
-const AFFIRMATIVE = /^\s*(s[ií]|dale|ok(ay)?|confirmo|listo|de una|👍|👌)\b/i;
-const NEGATIVE = /^\s*(no|cancel|cancelar|mejor no|d[ée]jalo)\b/i;
+// Boundary via negative lookahead, NOT \b: "sí" ends in an accented char that \b
+// does not treat as a word char, so \b would never match after it.
+const AFFIRMATIVE = /^\s*(s[ií]|dale|okay?|confirmo|listo|de una|👍|👌)(?![a-záéíóúüñ])/i;
+const NEGATIVE = /^\s*(no|cancel(ar)?|mejor no|d[ée]jalo)(?![a-záéíóúüñ])/i;
 const DEFAULT_QUORUM = 3;
 const DEFAULT_PROMPT = "¿Le darías luz verde a esta acción?";
 const DEFAULT_OPTIONS = ["No", "Sí"] as const;
