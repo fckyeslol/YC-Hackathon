@@ -1,0 +1,18 @@
+node_modules/
+.env
+.env.*
+!.env.example
+dist/
+.next/
+*.sqlite
+*.log
+.DS_Store
+coverage/
+
+# Store snapshot — contiene PII (teléfonos, votos). Nunca al repo.
+data/
+
+# Proyectos ajenos que viven en la misma carpeta de trabajo, no son parte de Verdict.
+/svg-arena/
+/Curso-IA/
+/dynamic-hackathon/

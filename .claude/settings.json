@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(npm run test:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run typecheck:*)",
+      "Bash(npm run dev:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const i=JSON.parse(d);const p=i.tool_input?.file_path||'';if(/src[\\\\/].+\\.(ts|tsx)$/.test(p)&&!/\\.(test|spec)\\.ts$/.test(p)){console.error('[SDD] Editando codigo de comportamiento: confirma que existe un spec APROBADO en specs/ que lo respalda (ver specs/README.md). El spec manda sobre el codigo.');}console.log(d);})\"",
+            "description": "Recordatorio SDD: no hay codigo de comportamiento sin spec aprobado"
+          }
+        ]
+      }
+    ]
+  }
+}

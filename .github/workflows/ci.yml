@@ -1,0 +1,57 @@
+name: CI + Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Token de proyecto de Railway (Settings → Tokens). Cargar como secret del repo:
+# GitHub → Settings → Secrets and variables → Actions → New repository secret → RAILWAY_TOKEN.
+# Opcional: variable RAILWAY_SERVICE con el nombre del servicio si el proyecto tiene más de uno.
+env:
+  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+  RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+
+jobs:
+  ci:
+    name: Typecheck + Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+  deploy:
+    name: Deploy to Railway
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      # Se salta solo si no hay token configurado (usás la integración nativa de Railway).
+      - name: Deploy
+        if: ${{ env.RAILWAY_TOKEN != '' }}
+        run: railway up --detach ${RAILWAY_SERVICE:+--service "$RAILWAY_SERVICE"}
