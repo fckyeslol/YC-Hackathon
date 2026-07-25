@@ -52,7 +52,7 @@ describe("handleDemoTurn", () => {
   });
 
   it("stages an escalation and shows the anonymized preview (nothing sent yet)", async () => {
-    const session: { pendingConsent?: unknown; lastSeen: number } = { lastSeen: 0 };
+    const session: { pendingConsent?: { anon: AnonymizedSummary; action: Action }; lastSeen: number } = { lastSeen: 0 };
     const d = deps({ handle: async () => ({ kind: "escalated", previewText: "reviewer sees: vivienda 66.5%", anon }) });
     const reply = await handleDemoTurn("Send $200 to Ana", session, d);
     expect(reply.bubbles.some((b) => b.text.includes("vivienda 66.5%"))).toBe(true);
@@ -75,6 +75,40 @@ describe("handleDemoTurn", () => {
     expect(reply.effect).toBeUndefined();
     expect(reply.bubbles[0]?.text.toLowerCase()).toContain("won't share");
     expect(session.pendingConsent).toBeUndefined();
+  });
+
+  it("fills a missing slot from a follow-up value instead of parsing it cold", async () => {
+    // Turn 1: "pay my dad" → missing amount → reprompt stages the partial action.
+    const session: { pendingSlot?: Action; lastSeen: number } = { lastSeen: 0 };
+    const partial: Action = {
+      ...payAction(),
+      params: { recipient: "dad" },
+      missingSlots: ["amount"],
+      rawText: "pay my dad",
+    };
+    const turn1 = await handleDemoTurn("pay my dad", session, deps({
+      parse: async () => partial,
+      handle: async () => ({ kind: "reprompt", text: "How much?", missing: ["amount"], action: partial }),
+    }));
+    expect(turn1.bubbles[0]?.text).toBe("How much?");
+    expect(session.pendingSlot).toBeDefined();
+
+    // Turn 2: "200usd" is a slot value — the cold parse returns `unknown`, but the
+    // merge must recover amount=200 and hand a COMPLETE pay action to the loop.
+    let handledAction: Action | undefined;
+    const turn2 = await handleDemoTurn("200usd", session, deps({
+      parse: async () => ({ ...payAction(), intent: "unknown", type: undefined, params: {}, missingSlots: [] }),
+      handle: async (_t, _v, pre) => {
+        handledAction = pre;
+        return { kind: "confirm_required", text: "send 200 to dad — confirm? 👍", action: pre! };
+      },
+    }));
+    expect(handledAction?.intent).toBe("pay");
+    expect(handledAction?.params.amount).toBe(200);
+    expect(handledAction?.params.recipient).toBe("dad");
+    expect(handledAction?.missingSlots.length).toBe(0);
+    expect(turn2.bubbles[0]?.text).toContain("confirm");
+    expect(session.pendingSlot).toBeUndefined();
   });
 
   it("passes plain replies through untouched", async () => {

@@ -45,12 +45,12 @@ export function normalizeAmount(text: string): number | null {
   return null;
 }
 
-/** Parse a relative period, or null. */
+/** Parse a relative period (ES + EN), or null. */
 export function normalizePeriod(text: string): Period | null {
   const t = text.toLowerCase();
-  if (/mes pasad|mes anterior|último mes|ultimo mes/.test(t)) return "last_month";
-  if (/este mes|del mes|mensual/.test(t)) return "this_month";
-  if (/semana pasad|última semana|ultima semana/.test(t)) return "last_week";
-  if (/esta semana|semanal/.test(t)) return "this_week";
+  if (/mes pasad|mes anterior|último mes|ultimo mes|last month|previous month/.test(t)) return "last_month";
+  if (/este mes|del mes|mensual|this month|monthly/.test(t)) return "this_month";
+  if (/semana pasad|última semana|ultima semana|last week/.test(t)) return "last_week";
+  if (/esta semana|semanal|this week|weekly/.test(t)) return "this_week";
   return null;
 }

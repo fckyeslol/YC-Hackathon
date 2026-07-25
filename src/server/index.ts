@@ -8,6 +8,7 @@ import { parseIntent } from "../agent/parseIntent.js";
 import type { LlmClassifier } from "../agent/types.js";
 import type { LedgerPort } from "../agent/ports.js";
 import { handleAgentMessage, type AgentOutcome, type OrchestratorDeps } from "../agent/orchestrator.js";
+import { SlotFillStore, fillPending, isFreshCommand } from "../agent/slotFill.js";
 import { RETRY_PROMPT, transcribeVoice, type Transcriber } from "../agent/voice.js";
 import type { DynamicWallet } from "../clients/dynamic.js";
 import {
@@ -160,6 +161,13 @@ export function agentWallet(): DynamicWallet | undefined {
  */
 const pendingActions = new PendingActionStore();
 
+/**
+ * Partial actions awaiting a missing slot value (BR-P2 multi-turn; PLAN §5.3).
+ * When the agent re-asks ("How much?"), the half-filled action is staged here so
+ * the next message ("200usd") is merged as a slot value instead of parsed cold.
+ */
+const slotFills = new SlotFillStore();
+
 /** Renders a resolved payment for the user (BR-C6 / BR-C7). */
 function paymentReply(outcome: ResolveOutcome): string | undefined {
   switch (outcome.kind) {
@@ -231,6 +239,25 @@ const reviewCoordinator = new ReviewCoordinator({
   },
 });
 
+/**
+ * Send an agent outcome and persist whatever state it implies:
+ *   - reprompt → stage the partial action for slot-filling (BR-P2)
+ *   - escalated → stage the summary for the user's consent (BR-T6)
+ *   - confirm_required → stage the payment for a 👍/"sí" (BR-C1)
+ */
+async function dispatchOutcome(phone: string, outcome: AgentOutcome): Promise<void> {
+  if (outcome.kind === "reprompt") {
+    slotFills.stage(phone, outcome.action);
+    await guardedReply(phone, outcome.text);
+    return;
+  }
+  if (outcome.kind === "escalated") reviewCoordinator.stageConsent(phone, outcome.anon);
+  const sentId = await guardedReply(phone, outcomeText(outcome));
+  // Stage AFTER the proposal is sent, so the pending carries that message's id
+  // and a tapback on it can resolve the payment (BR-C1/BR-C2).
+  if (outcome.kind === "confirm_required") pendingActions.stage(phone, outcome.action, sentId);
+}
+
 const app = buildLinqApp({
   ...(config.LINQ_WEBHOOK_SECRET ? { secret: config.LINQ_WEBHOOK_SECRET } : {}),
   state,
@@ -285,17 +312,27 @@ const app = buildLinqApp({
       }
     }
 
-    const outcome = await handleAgentMessage(text, fromVoice, agentDeps);
-    // On escalation, stage the summary and wait for the user's 👍 (BR-T6).
-    if (outcome.kind === "escalated") reviewCoordinator.stageConsent(phone, outcome.anon);
-
-    const sentId = await guardedReply(phone, outcomeText(outcome));
-
-    // Stage AFTER the proposal is sent, so the pending carries that message's id
-    // and a tapback on it can resolve the payment (BR-C1/BR-C2).
-    if (outcome.kind === "confirm_required") {
-      pendingActions.stage(phone, outcome.action, sentId);
+    // A partial request awaiting a missing slot: the reply is a VALUE, not a new
+    // command, so merge it in instead of parsing it cold (BR-P2 multi-turn).
+    if (slotFills.has(phone)) {
+      const pending = slotFills.peek(phone)!;
+      const probe = await agentDeps.parse(text);
+      if (probe.intent === "cancel") {
+        slotFills.clear(phone);
+        await guardedReply(phone, "Okay, I'll cancel it.");
+        return;
+      }
+      if (!isFreshCommand(probe.intent, pending.intent)) {
+        slotFills.clear(phone);
+        const merged = fillPending(pending, probe, text);
+        await dispatchOutcome(phone, await handleAgentMessage(merged.rawText, fromVoice, agentDeps, merged));
+        return;
+      }
+      // A genuinely new command → drop the stale fill and handle `text` normally.
+      slotFills.clear(phone);
     }
+
+    await dispatchOutcome(phone, await handleAgentMessage(text, fromVoice, agentDeps));
   },
   // Tapback on a proposal: 👍 pays, 👎 cancels, anything else is ignored (BR-C2).
   onVote: async ({ messageId, reaction, action }) => {
@@ -342,7 +379,7 @@ const demoLedger: LedgerPort = {
   buildSummary: async () => demoSummary,
 };
 registerDemoRoutes(app, {
-  handle: (t, fromVoice) => handleAgentMessage(t, fromVoice, { ...agentDeps, ledger: demoLedger }),
+  handle: (t, fromVoice, preParsed) => handleAgentMessage(t, fromVoice, { ...agentDeps, ledger: demoLedger }, preParsed),
   parse: (t) => agentDeps.parse(t),
   dashboardAnswer: (action) => demoLedger.answerQuery(action),
 });

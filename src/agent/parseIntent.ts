@@ -39,9 +39,25 @@ export async function parseIntent(text: string, deps: ParseDeps): Promise<Action
   const parsed = rawSchema.safeParse(raw);
   if (!parsed.success) return unknownAction(text); // invalid shape -> unknown (BR-P1)
 
-  const intent = parsed.data.intent;
   const rawText = parsed.data.rawText ?? text;
-  const params = normalizeParams(parsed.data.slots);
+  return buildAction(parsed.data.intent, parsed.data.slots, parsed.data.confidence, rawText, deps);
+}
+
+/**
+ * Derive a validated Action from an intent + raw slots (BR-P2/P3/P4/P6/P8).
+ * Split out from `parseIntent` so multi-turn slot-filling (slotFill.ts) can
+ * rebuild an action after merging a follow-up value — with the risk signals,
+ * missing-slot set and idempotency id all recomputed from the FILLED params,
+ * never left stale from the half-filled first turn.
+ */
+export function buildAction(
+  intent: Intent,
+  slots: Record<string, unknown>,
+  confidence: number,
+  rawText: string,
+  deps: Pick<ParseDeps, "allowlist" | "seenActionIds"> = {},
+): Action {
+  const params = normalizeParams(slots);
 
   const recipient = typeof params.recipient === "string" ? params.recipient : undefined;
   const novelCounterparty = recipient !== undefined && !isKnown(recipient, deps.allowlist);
@@ -51,7 +67,7 @@ export async function parseIntent(text: string, deps: ParseDeps): Promise<Action
     amountBucket: bucketAmount(amount),
     novelCounterparty,
     volatileSwap: intent === "swap",
-    modelConfidence: parsed.data.confidence,
+    modelConfidence: confidence,
   };
 
   const missing = missingSlots(intent, params);
@@ -62,7 +78,7 @@ export async function parseIntent(text: string, deps: ParseDeps): Promise<Action
   const actionId =
     MONEY_INTENTS.includes(intent) && missing.length === 0 ? contentId(intent, params) : undefined;
 
-  return { intent, type, params, riskSignals, confidence: parsed.data.confidence, missingSlots: missing, rawText, actionId };
+  return { intent, type, params, riskSignals, confidence, missingSlots: missing, rawText, actionId };
 }
 
 /** True if this action was already seen (idempotency, BR-P6). */

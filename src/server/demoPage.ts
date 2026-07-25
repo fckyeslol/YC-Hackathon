@@ -5,6 +5,7 @@ import type { Action } from "../agent/types.js";
 import type { AnonymizedSummary } from "../anonymization/types.js";
 import { dawidSkene } from "../core/aggregation/dawidSkene.js";
 import type { Vote } from "../core/types.js";
+import { fillPending, isFreshCommand } from "../agent/slotFill.js";
 
 /**
  * Public "try it" playground (deliverable §15 — the live demo link).
@@ -34,9 +35,9 @@ export interface DemoReply {
 }
 
 export interface DemoDeps {
-  /** The agent loop core — same one the Linq webhook uses. */
-  handle: (text: string, fromVoice: boolean) => Promise<AgentOutcome>;
-  /** Intent parse (for pending confirm/cancel + dashboard routing). */
+  /** The agent loop core — same one the Linq webhook uses. `preParsed` feeds a merged slot-fill action. */
+  handle: (text: string, fromVoice: boolean, preParsed?: Action) => Promise<AgentOutcome>;
+  /** Intent parse (for pending confirm/cancel + dashboard routing + slot-fill merge). */
   parse: (text: string) => Promise<Action>;
   /** Dashboard link text for a `dashboard` action (mints a real tokenized link). */
   dashboardAnswer: (action: Action) => Promise<string>;
@@ -45,6 +46,8 @@ export interface DemoDeps {
 interface Session {
   pendingAction?: Action | undefined;
   pendingConsent?: { anon: AnonymizedSummary; action: Action } | undefined;
+  /** A half-filled request awaiting a missing slot value (BR-P2 multi-turn). */
+  pendingSlot?: Action | undefined;
   lastSeen: number;
 }
 
@@ -188,18 +191,44 @@ export async function handleDemoTurn(text: string, session: Session, deps: DemoD
     session.pendingAction = undefined;
   }
 
-  // 3) Fresh message. Probe the intent so we can route the dashboard link.
-  const action = await deps.parse(trimmed);
+  // 3) A half-filled request awaiting a missing slot: the reply is a VALUE, not a
+  // new command, so merge it in instead of parsing it cold (BR-P2 multi-turn).
+  if (session.pendingSlot) {
+    const pending = session.pendingSlot;
+    session.pendingSlot = undefined;
+    const probe = await deps.parse(trimmed);
+    if (probe.intent === "cancel" || NO.test(trimmed)) {
+      return { bubbles: [{ kind: "agent", text: "Okay, cancelled." }] };
+    }
+    if (!isFreshCommand(probe.intent, pending.intent)) {
+      const merged = fillPending(pending, probe, trimmed);
+      return runAction(merged, session, deps);
+    }
+    // A genuinely new command → fall through and handle `trimmed` fresh below.
+  }
+
+  // 4) Fresh message.
+  return runAction(await deps.parse(trimmed), session, deps);
+}
+
+/** Route a resolved action: dashboard → tokenized link; otherwise the agent loop. */
+async function runAction(action: Action, session: Session, deps: DemoDeps): Promise<DemoReply> {
   if (action.intent === "dashboard") {
     return { bubbles: [{ kind: "agent", text: await deps.dashboardAnswer(action) }] };
   }
+  const outcome = await deps.handle(action.rawText, false, action);
+  return renderOutcome(outcome, action, session);
+}
 
-  const outcome = await deps.handle(trimmed, false);
+/** Turn an agent outcome into bubbles, staging whatever follow-up state it implies. */
+function renderOutcome(outcome: AgentOutcome, action: Action, session: Session): DemoReply {
   switch (outcome.kind) {
     case "reply":
     case "answer":
-    case "reprompt":
     case "blocked":
+      return { bubbles: [{ kind: "agent", text: outcome.text }] };
+    case "reprompt":
+      session.pendingSlot = outcome.action;
       return { bubbles: [{ kind: "agent", text: outcome.text }] };
     case "confirm_required":
       session.pendingAction = outcome.action;

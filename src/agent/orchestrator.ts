@@ -23,7 +23,7 @@ import { ConsentToken } from "../escalation/consent.js";
 export type AgentOutcome =
   | { kind: "reply"; text: string }
   | { kind: "answer"; text: string }
-  | { kind: "reprompt"; text: string; missing: readonly string[] }
+  | { kind: "reprompt"; text: string; missing: readonly string[]; action: Action }
   | { kind: "confirm_required"; text: string; action: Action }
   | { kind: "escalated"; previewText: string; anon: AnonymizedSummary }
   | { kind: "blocked"; text: string };
@@ -71,8 +71,11 @@ export async function handleAgentMessage(
   text: string,
   fromVoice: boolean,
   deps: OrchestratorDeps,
+  preParsed?: Action,
 ): Promise<AgentOutcome> {
-  const action = await deps.parse(text);
+  // `preParsed` lets the slot-filling layer feed an already-merged action so the
+  // completed request is dispatched without re-parsing the follow-up value.
+  const action = preParsed ?? (await deps.parse(text));
   const { intent } = action;
 
   // Small-talk → natural conversation (BR-CV1), distinct from unknown (BR-CV5).
@@ -110,7 +113,7 @@ export async function handleAgentMessage(
 
   // Actionable: pay / split / swap / advice.
   if (action.missingSlots.length > 0) {
-    return { kind: "reprompt", text: repromptText(action), missing: [...action.missingSlots] };
+    return { kind: "reprompt", text: repromptText(action), missing: [...action.missingSlots], action };
   }
 
   const decision = classify({ type: action.type ?? "advice", riskSignals: action.riskSignals });
