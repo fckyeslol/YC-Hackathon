@@ -36,13 +36,32 @@ export function normalizeAmount(text: string): number | null {
     if (!Number.isNaN(qty)) return Math.round(qty * mult);
   }
 
-  // Bare number fallback — "200", "1.500" (CO thousands separator), "1,50".
-  const bare = t.match(/\d[\d.]*/);
+  // Bare number fallback. Must handle BOTH conventions that share the "." char:
+  //   - CO thousands: "1.500" -> 1500, "1.000.000" -> 1000000
+  //   - decimals (USDC amounts like 0.01, 0.5, 1.50) -> kept as-is
+  // A dot is a thousands separator ONLY when EVERY group after it is exactly 3
+  // digits; otherwise it is a decimal point. Stripping every dot (the old bug)
+  // turned "0.01" into 1 and would have sent 100× the intended USDC.
+  const bare = t.match(/\d[\d.,]*/);
   if (bare) {
-    const n = Number(bare[0].replace(/\./g, ""));
+    const n = parseNumeric(bare[0]);
     if (!Number.isNaN(n)) return n;
   }
   return null;
+}
+
+/** Parse a bare number honoring CO thousands ("1.500") vs decimals ("0.01"). */
+function parseNumeric(s: string): number {
+  if (s.includes(",")) {
+    // CO decimal comma: dots are thousands, comma is the decimal point.
+    return parseFloat(s.replace(/\./g, "").replace(",", "."));
+  }
+  if (s.includes(".")) {
+    const parts = s.split(".");
+    const isThousands = parts.length > 1 && parts.slice(1).every((p) => p.length === 3);
+    return isThousands ? Number(parts.join("")) : parseFloat(s);
+  }
+  return Number(s);
 }
 
 /** Parse a relative period (ES + EN), or null. */

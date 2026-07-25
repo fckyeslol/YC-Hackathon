@@ -195,8 +195,19 @@ const conversation = config.RUNWARE_API_KEY
   ? makeClaudeConversation({ apiKey: config.RUNWARE_API_KEY, model: config.RUNWARE_LLM_MODEL, baseUrl: config.RUNWARE_BASE_URL })
   : undefined;
 
+/**
+ * Known payees from DYNAMIC_PAYEES become the parser allowlist (BR-P3). A payment
+ * to a KNOWN payee is NOT a novel counterparty, so the guardrail auto-confirms and
+ * executes via Dynamic (BR-G1) instead of escalating EVERY payment to human review.
+ * Without this, no recipient is ever known → every payment escalates → the wallet
+ * never fires. Novel/high-amount payments still escalate to Terac (BR-G2).
+ */
+const knownPayees = config.DYNAMIC_PAYEES.split(",")
+  .map((p) => p.split(":")[0]?.trim())
+  .filter((n): n is string => !!n);
+
 const agentDeps: OrchestratorDeps = {
-  parse: (t) => parseIntent(t, { classify }),
+  parse: (t) => parseIntent(t, { classify, ...(knownPayees.length > 0 ? { allowlist: knownPayees } : {}) }),
   ledger: delegatingLedger,
   // Live LLM leak auditor when configured; absent → regex floor only (BR-A5).
   ...(leakScan ? { llmLeakScan: leakScan } : {}),

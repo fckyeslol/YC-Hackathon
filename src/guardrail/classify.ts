@@ -25,6 +25,11 @@ export function classify(action: Action): ClassifyResult {
   const isMoney = MONEY_ACTIONS.includes(type);
   const reasons: string[] = [];
 
+  // BR-G3: advice is Verdict's differentiator — human judgment, not a lone LLM
+  // opinion on someone's money. It ALWAYS escalates to consensus (Terac), never
+  // auto-answered. (Money actions escalate only on the risk triggers below.)
+  if (type === "advice") reasons.push("advice_needs_human");
+
   // BR-G2: high amount on a money action.
   if (isMoney && (r.amountBucket === "alto" || r.amountBucket === "muy_alto")) {
     reasons.push(`amount_${r.amountBucket}`);
