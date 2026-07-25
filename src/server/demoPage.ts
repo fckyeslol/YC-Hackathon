@@ -371,11 +371,10 @@ const DEMO_HTML = /* html */ `<!doctype html>
   const form = document.getElementById("composer");
   const chipsEl = document.getElementById("chips");
   const CHIPS = [
-    "Show my spending dashboard",
-    "Should I cancel Netflix?",
     "Send $200 to Ana",
-    "Swap 100 USDC to ETH",
+    "Show my spending dashboard",
     "Where did my money go this month?",
+    "How much did I spend on food?",
   ];
   const urlRe = /(https?:\\/\\/[^\\s]+)/g;
 

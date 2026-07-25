@@ -24,6 +24,8 @@ import { ReviewCoordinator } from "../escalation/reviewCoordinator.js";
 import { registerReviewRoutes } from "./reviewPage.js";
 import { registerDashboardRoutes } from "./dashboardPage.js";
 import { registerDemoRoutes } from "./demoPage.js";
+import { computeSummary } from "../anonymization/anonymize.js";
+import { DEMO_PROFILE } from "../anonymization/demoProfile.js";
 import { buildDashboard } from "../dashboard/buildDashboard.js";
 import { toLedgerTxs } from "../dashboard/ledgerAdapter.js";
 import { createDashboardLinkStore, dashboardUrl } from "../dashboard/link.js";
@@ -329,10 +331,20 @@ registerDashboardRoutes(app, { resolve: (token) => dashboardLinks.resolve(token)
 // Public "try it" playground (deliverable §15): an iMessage-style web chat that
 // feeds the SAME agent loop — no phone/opt-in. Payments simulated; human review
 // shows the real anonymized preview + a simulated Dawid–Skene consensus.
+// Demo playground ledger: same answerQuery (so "dashboard" still mints a real
+// tokenized link), but buildSummary returns a populated demo profile so the
+// anonymized reviewer preview and spending answers have real shape. Isolated to
+// the demo — the live webhook path keeps its fail-closed empty stub until Dynamic
+// connects. Fake data, no PII; anonymization still runs on top before any preview.
+const demoSummary = computeSummary(DEMO_PROFILE);
+const demoLedger: LedgerPort = {
+  answerQuery: (action) => delegatingLedger.answerQuery(action),
+  buildSummary: async () => demoSummary,
+};
 registerDemoRoutes(app, {
-  handle: (t, fromVoice) => handleAgentMessage(t, fromVoice, agentDeps),
+  handle: (t, fromVoice) => handleAgentMessage(t, fromVoice, { ...agentDeps, ledger: demoLedger }),
   parse: (t) => agentDeps.parse(t),
-  dashboardAnswer: (action) => delegatingLedger.answerQuery(action),
+  dashboardAnswer: (action) => demoLedger.answerQuery(action),
 });
 
 app
