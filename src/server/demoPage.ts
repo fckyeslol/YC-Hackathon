@@ -55,8 +55,22 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_SESSIONS = 1000;
 const MONEY_INTENTS = new Set(["pay", "split", "swap"]);
 
-const YES = /^(s[ií]|yes|y|ok(ay)?|dale|claro|hazlo|do it|confirm|confirmar|👍|👌|✅)\b/i;
-const NO = /^(no|nope|cancel|cancelar|stop|nah|👎|❌)\b/i;
+/**
+ * Affirmation / negation detection for the yes-no steps (consent, confirm).
+ * Prefix match with NO trailing `\b` on purpose: `👍\b` never matches (an emoji
+ * followed by end-of-string is not a word boundary), which is exactly why a bare
+ * "👍" — the thing the prompt asks for — used to be ignored. Vocab is broad so
+ * "yeah sure", "yep", "go ahead", "share it" all land.
+ */
+const AFFIRM = /^\s*(s[ií]+|yes+|yeah|yep|yup|sure|ok(ay|ey|s)?|k|dale|claro|listo|hazlo|do it|go ahead|sounds good|confirm|confirmar|share|👍|👌|✅|🙌|🙂)/i;
+const NEGATE = /^\s*(no+|nope|nah|cancel|cancelar|stop|don'?t|do not|keep it private|private|👎|❌|🚫)/i;
+
+export function isAffirmative(text: string): boolean {
+  return AFFIRM.test(text.trim());
+}
+export function isNegative(text: string): boolean {
+  return NEGATE.test(text.trim());
+}
 
 /** In-memory per-browser state. Fine for a demo; evicted by TTL + hard cap. */
 const sessions = new Map<string, Session>();
@@ -155,12 +169,12 @@ export async function handleDemoTurn(text: string, session: Session, deps: DemoD
 
   // 1) A staged escalation is waiting for the user's yes/no (their consent).
   if (session.pendingConsent) {
-    if (YES.test(trimmed)) {
+    if (isAffirmative(trimmed)) {
       const staged = session.pendingConsent;
       session.pendingConsent = undefined;
       return resolveConsent(staged);
     }
-    if (NO.test(trimmed)) {
+    if (isNegative(trimmed)) {
       session.pendingConsent = undefined;
       return { bubbles: [{ kind: "agent", text: "Got it — I won't share anything. Nothing left the device." }] };
     }
@@ -170,7 +184,7 @@ export async function handleDemoTurn(text: string, session: Session, deps: DemoD
   // 2) A payment is staged awaiting confirmation (the auto-money path, BR-P5).
   if (session.pendingAction) {
     const probe = await deps.parse(trimmed);
-    if (probe.intent === "confirm" || YES.test(trimmed)) {
+    if (probe.intent === "confirm" || isAffirmative(trimmed)) {
       const action = session.pendingAction;
       session.pendingAction = undefined;
       return {
@@ -183,7 +197,7 @@ export async function handleDemoTurn(text: string, session: Session, deps: DemoD
         effect: "confetti",
       };
     }
-    if (probe.intent === "cancel" || NO.test(trimmed)) {
+    if (probe.intent === "cancel" || isNegative(trimmed)) {
       session.pendingAction = undefined;
       return { bubbles: [{ kind: "agent", text: "Cancelled. Nothing moved." }] };
     }
@@ -197,7 +211,7 @@ export async function handleDemoTurn(text: string, session: Session, deps: DemoD
     const pending = session.pendingSlot;
     session.pendingSlot = undefined;
     const probe = await deps.parse(trimmed);
-    if (probe.intent === "cancel" || NO.test(trimmed)) {
+    if (probe.intent === "cancel" || isNegative(trimmed)) {
       return { bubbles: [{ kind: "agent", text: "Okay, cancelled." }] };
     }
     if (!isFreshCommand(probe.intent, pending.intent)) {

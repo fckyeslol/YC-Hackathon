@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { handleDemoTurn, type DemoDeps } from "./demoPage.js";
+import { handleDemoTurn, isAffirmative, isNegative, type DemoDeps } from "./demoPage.js";
 import type { AgentOutcome } from "../agent/orchestrator.js";
 import type { Action } from "../agent/types.js";
 import type { AnonymizedSummary } from "../anonymization/types.js";
@@ -39,6 +39,40 @@ function deps(overrides: Partial<DemoDeps>): DemoDeps {
     ...overrides,
   };
 }
+
+describe("isAffirmative / isNegative", () => {
+  it("accepts a bare 👍 and casual yeses (the reported consent bug)", () => {
+    for (const t of ["👍", "yeah sure", "yeah", "yep", "yup", "sure", "ok", "sí", "do it", "share it", "  👍  "]) {
+      expect(isAffirmative(t)).toBe(true);
+    }
+  });
+  it("recognizes negatives", () => {
+    for (const t of ["👎", "no", "nope", "nah", "keep it private", "don't"]) {
+      expect(isNegative(t)).toBe(true);
+    }
+  });
+  it("does not read a negative as a yes", () => {
+    expect(isAffirmative("no")).toBe(false);
+    expect(isAffirmative("nope")).toBe(false);
+    expect(isNegative("yeah sure")).toBe(false);
+  });
+});
+
+/** A staged escalation consent, resolved by an affirmation. */
+describe("consent affirmation", () => {
+  it("resolves consent on '👍' and on 'yeah sure' (not just literal 'yes')", async () => {
+    for (const reply of ["👍", "yeah sure"]) {
+      const session = { pendingConsent: { anon, action: payAction() }, lastSeen: 0 };
+      const out = await handleDemoTurn(reply, session, {
+        handle: async () => ({ kind: "reply", text: "hi" }),
+        parse: async () => payAction(),
+        dashboardAnswer: async () => "x",
+      });
+      expect(out.effect).toBe("confetti");
+      expect(session.pendingConsent).toBeUndefined();
+    }
+  });
+});
 
 describe("handleDemoTurn", () => {
   it("routes a dashboard intent to the tokenized link, not the agent loop", async () => {
