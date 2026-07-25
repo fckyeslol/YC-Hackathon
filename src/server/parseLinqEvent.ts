@@ -5,10 +5,10 @@ import type { Reputation } from "../domain/sendGuard.js";
 /**
  * Maps the V3 webhook wire payload → `NormalizedInbound`.
  *
- * Field mapping VERIFIED against a real `message.received` event captured live
- * (2026-07-24): the payload is nested, and inbound text lives in `data.body`
- * (a string), the sender in `data.sender_handle.handle`, the chat in
- * `data.chat.id`, and the message id in `data.id`.
+ * Field mapping VERIFIED against a real RAW `message.received` webhook (2026-07-25):
+ * inbound text lives in `data.parts[]` as `{ type: "text", value }` (NOT `data.body`
+ * — that only shows up in the CLI relay's flattened display), the sender in
+ * `data.sender_handle.handle`, the chat in `data.chat.id`, the message id in `data.id`.
  */
 
 export const linqWebhookEventSchema = z.object({
@@ -31,6 +31,24 @@ const asObj = (v: unknown): Record<string, unknown> =>
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 
 const AUDIO_EXT = /\.(m4a|aac|mp3|wav|aiff|caf|amr|ogg)$/i;
+
+/**
+ * Inbound text. The REAL v3 payload carries it in `data.parts[]` as
+ * `{ type: "text", value }` (verified against a live raw webhook 2026-07-25);
+ * `data.body` only appears in the CLI relay's flattened display, never in the
+ * actual JSON. Read the parts first, fall back to `body` for safety.
+ */
+function textFromPayload(data: Record<string, unknown>): string {
+  if (Array.isArray(data.parts)) {
+    const texts = (data.parts as unknown[])
+      .map(asObj)
+      .filter((p) => (str(p.type) ?? "").toLowerCase() === "text")
+      .map((p) => str(p.value) ?? str(p.text))
+      .filter((v): v is string => v !== undefined);
+    if (texts.length > 0) return texts.join(" ");
+  }
+  return str(data.body) ?? str(data.text) ?? "";
+}
 
 /** Is this media part audio (by content type or filename/url extension)? */
 function isAudioPart(c: Record<string, unknown>): boolean {
@@ -79,7 +97,7 @@ export function parseLinqEvent(raw: unknown): NormalizedInbound {
 
   if (eventType === "message.received") {
     const from = str(asObj(data.sender_handle).handle);
-    const text = str(data.body) ?? "";
+    const text = textFromPayload(data);
     const chatId = str(asObj(data.chat).id);
     const messageId = str(data.id);
     const audioUrl = audioMediaUrl(data);

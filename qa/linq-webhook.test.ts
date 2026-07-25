@@ -61,7 +61,13 @@ describe("webhook router (pure) — INBOUND flow", () => {
   });
 });
 
-/** A real message.received payload captured live (2026-07-24), trimmed to the fields we read. */
+/**
+ * A real message.received payload captured live from the RAW webhook (2026-07-25).
+ * The inbound text lives in `data.parts[].value` (type "text") — NOT `data.body`.
+ * `data.body` only appears in the CLI relay's flattened terminal display; the
+ * actual JSON never has it. Reading `body` was the bug that made every inbound
+ * text extract as "" → classify as `unknown` → "I didn't quite get that".
+ */
 const REAL_INBOUND = {
   api_version: "v3",
   webhook_version: "2026-02-03",
@@ -71,16 +77,16 @@ const REAL_INBOUND = {
   partner_id: "3838d05b-ba83-560c-a3d4-7c5aa61d1f5f",
   data: {
     id: "3b4baae9-41e3-4096-9dbc-bf96a8f91108",
-    body: "Hiii",
     direction: "inbound",
     service: "iMessage",
+    parts: [{ text_decorations: null, type: "text", value: "Hiii" }],
     sender_handle: { handle: "+573187474092", is_me: false, service: "iMessage" },
     chat: { id: "87a2bea6-e50d-4277-b349-7e8ff132e8ae", is_group: false, health_status: { status: "HEALTHY" } },
   },
 };
 
 describe("parseLinqEvent — real V3 wire shapes", () => {
-  it("maps a real message.received (data.body / sender_handle.handle / chat.id)", () => {
+  it("extracts inbound text from data.parts[].value (the REAL shape, not data.body)", () => {
     const ev = parseLinqEvent(REAL_INBOUND);
     expect(ev).toMatchObject({
       type: "message",
@@ -91,6 +97,15 @@ describe("parseLinqEvent — real V3 wire shapes", () => {
       messageId: "3b4baae9-41e3-4096-9dbc-bf96a8f91108",
       hasAudio: false,
     });
+  });
+
+  it("falls back to data.body when there are no text parts (relay/legacy shape)", () => {
+    const ev = parseLinqEvent({
+      event_type: "message.received",
+      event_id: "legacy-1",
+      data: { id: "m0", body: "hola", sender_handle: { handle: "+1" }, chat: { id: "c0" } },
+    });
+    expect(ev).toMatchObject({ type: "message", text: "hola" });
   });
 
   it("routes a real inbound to the agent", () => {
