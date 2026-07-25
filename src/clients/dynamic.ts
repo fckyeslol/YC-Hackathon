@@ -239,6 +239,14 @@ export interface DynamicLedgerOptions {
    * balance overrides `exactBalance` so the summary agrees with reality.
    */
   readonly profile: () => Promise<FinancialProfile>;
+  /**
+   * COP per USDC, used to express the on-chain balance in the profile's own unit.
+   *
+   * The profile is denominated in COP (that is how the parser and the dashboard
+   * think). Dropping a USDC figure into `exactBalance` would make every
+   * balance-vs-spend comparison meaningless — 19.99 next to a 1.400.000 rent.
+   */
+  readonly copPerUsdc: number;
 }
 
 /** Read side: answers queries and builds the (PII-bearing, internal) escalation summary. */
@@ -271,10 +279,12 @@ export class DynamicLedger implements LedgerPort {
     return computeSummary(await this.buildProfileWithChainBalance());
   }
 
+  /** The profile, with its balance replaced by the real on-chain one (in COP). */
   private async buildProfileWithChainBalance(): Promise<FinancialProfile> {
     const profile = await this.opts.profile();
     const units = await this.opts.signer.usdcBalance();
-    return { ...profile, exactBalance: Number(formatUsdc(units)) };
+    const usdc = Number(formatUsdc(units));
+    return { ...profile, exactBalance: Math.round(usdc * this.opts.copPerUsdc) };
   }
 }
 

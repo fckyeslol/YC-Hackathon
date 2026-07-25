@@ -7,7 +7,9 @@
  * asked to build a signer (BR-D7).
  */
 import { config } from "../config.js";
-import type { FinancialProfile } from "../anonymization/types.js";
+import type { Category, FinancialProfile } from "../anonymization/types.js";
+import { DEMO_SPEND } from "../dashboard/demoSeed.js";
+import type { RawSpend } from "../dashboard/ledgerAdapter.js";
 import {
   DynamicLedger,
   DynamicWallet,
@@ -24,27 +26,90 @@ export interface DynamicPorts {
 }
 
 /**
- * Seed financial profile for the demo (BR-D3).
+ * The demo spending source, shared with the dashboard (BR-D3).
  *
- * ⚠️ VERIFICAR: the chain knows balances and USDC transfers, not merchants or spend
- * categories. Until a real transaction source exists, the categorized profile is
- * this seed; only `exactBalance` is replaced with the true on-chain balance by
- * DynamicLedger. Swap this for the real source before claiming the numbers are the
- * user's own.
+ * There used to be a second hand-written seed here, which meant the dashboard the
+ * user sees and the summary the Terac reviewers judge described the same month with
+ * DIFFERENT numbers. For a product whose whole thesis is "humans improved this
+ * specific advice", that is not a cosmetic bug — the reviewers were grading data the
+ * user never saw. One source now feeds both.
+ *
+ * ⚠️ VERIFICAR: still example data. The chain knows amounts and dates, not merchants
+ * or categories, so a genuine spending profile needs a categorized transaction
+ * source upstream. Only the balance is real (see DynamicLedger).
  */
-const SEED_PROFILE: FinancialProfile = {
-  identity: { name: "Mateo Pirela", phone: config.LINQ_NUMBER },
-  transactions: [
-    { id: "s1", merchant: "Rappi", amount: 180_000, currency: "COP", date: "2026-07-05", category: "comida" },
-    { id: "s2", merchant: "Uber", amount: 95_000, currency: "COP", date: "2026-07-07", category: "transporte" },
-    { id: "s3", merchant: "Netflix", amount: 42_000, currency: "COP", date: "2026-07-08", category: "suscripciones" },
-    { id: "s4", merchant: "Arriendo", amount: 1_400_000, currency: "COP", date: "2026-07-01", category: "vivienda" },
-    { id: "s5", merchant: "Claro", amount: 70_000, currency: "COP", date: "2026-07-10", category: "servicios" },
-  ],
-  monthlyIncome: 4_000_000,
-  exactBalance: 0, // overridden by the on-chain balance
-  priorPeriodTotals: { comida: 120_000, transporte: 110_000, suscripciones: 42_000 },
+
+/** Dashboard's free-text categories → the anonymization taxonomy. */
+const CATEGORY_TO_ANON: Record<string, Category> = {
+  comida: "comida",
+  mercado: "comida",
+  transporte: "transporte",
+  vivienda: "vivienda",
+  suscripciones: "suscripciones",
+  entretenimiento: "entretenimiento",
+  servicios: "servicios",
+  salud: "salud",
+  compras: "otros",
+  otros: "otros",
 };
+
+function toAnonCategory(raw: string): Category {
+  return CATEGORY_TO_ANON[raw.trim().toLowerCase()] ?? "otros";
+}
+
+/** "2026-07-05" → "2026-07" */
+function monthOf(date: string): string {
+  return date.slice(0, 7);
+}
+
+const isIncome = (row: RawSpend): boolean => row.direction === "income";
+
+/**
+ * Derives the PII-bearing profile from the shared spend rows.
+ *
+ * Current period = the most recent month present; prior period = the month before
+ * it, which is what gives `computeSummary` real month-over-month trends instead of
+ * invented ones.
+ */
+export function profileFromSpend(rows: readonly RawSpend[] = DEMO_SPEND): FinancialProfile {
+  const months = [...new Set(rows.map((r) => monthOf(r.date)))].sort();
+  const current = months[months.length - 1] ?? "";
+  const prior = months[months.length - 2];
+
+  const inCurrent = rows.filter((r) => monthOf(r.date) === current);
+
+  const transactions = inCurrent
+    .filter((r) => !isIncome(r))
+    .map((r) => ({
+      id: r.id,
+      merchant: r.merchant ?? "—",
+      amount: r.amountCop,
+      currency: "COP",
+      date: r.date,
+      category: toAnonCategory(r.category),
+    }));
+
+  const monthlyIncome = inCurrent
+    .filter(isIncome)
+    .reduce((sum, r) => sum + r.amountCop, 0);
+
+  const priorPeriodTotals: Partial<Record<Category, number>> = {};
+  if (prior !== undefined) {
+    for (const row of rows) {
+      if (monthOf(row.date) !== prior || isIncome(row)) continue;
+      const category = toAnonCategory(row.category);
+      priorPeriodTotals[category] = (priorPeriodTotals[category] ?? 0) + row.amountCop;
+    }
+  }
+
+  return {
+    identity: { name: "Mateo Pirela", phone: config.LINQ_NUMBER },
+    transactions,
+    monthlyIncome,
+    exactBalance: 0, // replaced with the real on-chain balance by DynamicLedger
+    priorPeriodTotals,
+  };
+}
 
 /** True when every credential the agent wallet needs is present. */
 export function dynamicConfigured(): boolean {
@@ -63,7 +128,7 @@ export function dynamicConfigured(): boolean {
 export async function buildDynamicPorts(
   signerFactory: (o: Parameters<typeof createDynamicSigner>[0]) => Promise<OnchainSigner> =
     createDynamicSigner,
-  profile: () => Promise<FinancialProfile> = async () => SEED_PROFILE,
+  profile: () => Promise<FinancialProfile> = async () => profileFromSpend(),
 ): Promise<DynamicPorts | null> {
   if (!dynamicConfigured()) return null;
 
@@ -85,5 +150,9 @@ export async function buildDynamicPorts(
     maxUsdcPerTx: config.DYNAMIC_MAX_USDC_PER_TX,
   });
 
-  return { ledger: new DynamicLedger({ signer, profile }), wallet, address: signer.address };
+  return {
+    ledger: new DynamicLedger({ signer, profile, copPerUsdc: config.DYNAMIC_COP_PER_USDC }),
+    wallet,
+    address: signer.address,
+  };
 }

@@ -90,9 +90,13 @@ describe("THE loop end-to-end (inbound → escalation → human verdict)", () =>
     expect(consent.consented).toBe(true);
     expect(deliver).toHaveBeenCalledOnce();
     // What crossed to Terac is the exact anonymized summary — still PII-free.
-    const delivered = JSON.stringify(deliver.mock.calls[0]![0]);
-    expect(delivered).not.toContain("Mateo");
-    expect(delivered).not.toMatch(/\d{7,}/);
+    const deliveredAnon = deliver.mock.calls[0]![0];
+    expect(JSON.stringify(deliveredAnon)).not.toContain("Mateo");
+    // Check for raw 7+ digit runs (cédula/account/balance) in the FINANCIAL fields,
+    // excluding reviewPseudonym: it is opaque system hex, safe by construction
+    // (BR-A4) — leakCheck itself skips it, so a digit-heavy hex is not a PII leak.
+    const { reviewPseudonym: _p, ...financialFields } = deliveredAnon;
+    expect(JSON.stringify(financialFields)).not.toMatch(/\d{7,}/);
 
     // --- Hop 3: three reviewers judge on the review page → quorum → Dawid–Skene ---
     const pseudonym = outcome.anon.reviewPseudonym;

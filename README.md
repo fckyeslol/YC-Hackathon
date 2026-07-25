@@ -171,15 +171,18 @@ flowchart TD
 |---|---|
 | iMessage in/out + voice + compliance (opt-out, HMAC, health/reputation gating) | ✅ implemented, tested |
 | Intent parser + risk guardrail (auto / escalate) | ✅ verified |
-| **Real payment** on Base Sepolia (confirm → 👍 → `pay()`) | ✅ tested · **real on-chain tx** `0x06fb…ad11` |
+| **`wallet.pay()`** — USDC transfer on Base Sepolia | ✅ **verified live** · real tx [`0x06fb…ad11`](https://sepolia.basescan.org/tx/0x06fb56e75467fc11ed3294b9311426cb9446b5a52e0ee41f2eabc3eaa433ad11) (receipt `0x1`, balances confirmed by RPC) |
+| Confirmation path (propose → stage → 👍/"yes" → `pay()`) | ✅ tested (19 specs, fake wallet) · full iMessage round-trip pending the public webhook |
 | Anonymization + leak-check (regex + LLM) + ConsentToken gate | ✅ verified |
 | Terac human review → Dawid–Skene → coaching | ✅ verified end-to-end |
 | Visual spending dashboard (tokenized link) | ✅ tested + visually verified |
 | **Full test suite** | ✅ **225 passing** · typecheck clean |
 
-**What's needed for the live demo** is infra, not code: Railway env vars (`LINQ_WEBHOOK_SECRET`, `PUBLIC_URL`, `DYNAMIC_*`), registering the Linq webhook at your public URL, and funding the agent wallet via faucets. The end-to-end path is verified by tests plus an independent real on-chain transaction; the full iMessage round-trip runs once that infra is wired.
+**What's needed for the live demo** is infra, not code: Railway env vars (see [`.env.example`](.env.example) — every variable is documented there), and registering the Linq webhook at your public URL. The agent wallet is already funded on Base Sepolia (USDC + gas).
 
-> **Honesty note:** payments are real on-chain transactions; swaps use a real market price with simulated execution (testnet liquidity). The demo spending *profile* is seeded example data — the chain knows amounts and dates, not merchants or categories, so a real categorized transaction source is the next integration.
+> **Honesty note.** Payments are real on-chain transactions — one has settled and is linked above. What that transaction does *not* prove is the chat round-trip: it was executed by calling the wallet directly, not by tapping 👍 in iMessage. That path is covered by tests against a fake wallet and needs the public webhook to be demonstrated live.
+>
+> Swaps use a real market price with simulated execution (testnet liquidity). The spending *profile* is seeded example data, shared by the dashboard and the reviewer summary so both describe the same month — the chain knows amounts and dates, not merchants or categories, so a categorized transaction source is the next integration. Only the balance is real.
 
 ---
 

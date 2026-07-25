@@ -123,9 +123,11 @@ const dashboardLinks = createDashboardLinkStore();
 
 function rangeOf(action: { params: Record<string, unknown> }): Range {
   const p = String(action.params.period ?? "").toLowerCase();
-  if (p.includes("año") || p.includes("12")) return "12meses";
-  if (p.includes("trimestre") || p.includes("3")) return "3meses";
-  return "mes";
+  // Match ES + EN so an English demo ("last year", "last 3 months") doesn't fall
+  // through silently to "mes" and show the wrong range without warning.
+  if (/(a[nñ]o|year|12)/.test(p)) return "12meses";
+  if (/(trimestre|quarter|3)/.test(p)) return "3meses";
+  return "mes"; // "este mes" / "this month" / default
 }
 
 /** Delegates per call, so `agentDeps` stays const while the adapter is upgraded. */
@@ -234,6 +236,8 @@ const app = buildLinqApp({
     await linq.send(to, [text(body)]);
   },
   onAgent: async ({ phone, text: msgText, needsTranscription, audioUrl }) => {
+    // TEMP DIAGNOSTIC: what does the REAL webhook path receive/produce? Remove after.
+    console.log(`[diag-in] rx=${JSON.stringify(msgText)} needsT=${needsTranscription} pendReview=${reviewCoordinator.hasPending(phone)}`);
     // Voice note: transcribe first, then run the SAME pipeline as text (BR-V5),
     // flagging fromVoice so money actions echo the transcript for confirmation
     // (BR-V4). No STT / no audio URL / low confidence → ask to type (BR-V3).
@@ -281,6 +285,7 @@ const app = buildLinqApp({
     }
 
     const outcome = await handleAgentMessage(text, fromVoice, agentDeps);
+    console.log(`[diag-in] outcome=${outcome.kind}`); // TEMP DIAGNOSTIC
     // On escalation, stage the summary and wait for the user's 👍 (BR-T6).
     if (outcome.kind === "escalated") reviewCoordinator.stageConsent(phone, outcome.anon);
 
@@ -329,6 +334,14 @@ app
     console.log(`[verdict] listening on ${address}`);
     if (!config.LINQ_WEBHOOK_SECRET) {
       console.warn("[verdict] LINQ_WEBHOOK_SECRET not set — /webhooks/linq will reject all events (fail closed)");
+    }
+    // TEMP DIAGNOSTIC: does the brain reach Runware from THIS container? Calls the
+    // classifier once on boot and logs the raw result or the exact error. "hello"
+    // is not PII. Remove once the deploy-time brain failure is diagnosed.
+    if (config.RUNWARE_API_KEY) {
+      handleAgentMessage("hello", false, agentDeps)
+        .then((o) => console.log(`[diag] handle("hello") → kind=${o.kind} text=${JSON.stringify("text" in o ? o.text.slice(0, 120) : "")}`))
+        .catch((e) => console.error(`[diag] handle FAILED → ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`));
     }
     // Upgrade the ledger/wallet in the background: a slow SIWE sign-in must not
     // delay accepting webhooks, and a failure must leave the stub in place.

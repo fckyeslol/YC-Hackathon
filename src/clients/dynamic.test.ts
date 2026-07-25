@@ -25,6 +25,7 @@ import {
  * is exactly what BR-D7 requires so this suite passes on Windows too.
  */
 
+const COP_PER_USDC = 4000;
 const PAYEE = "0xb42857974D0B8340207c4cD369daF678c1531D03" as const;
 const AGENT = "0x50A65139B8d824A0eaFD57077F42684b89e91b7A" as const;
 const TX = "0xda88450742a71e658d07338382dcc529f6555a630716330a5cf2c35318914c72" as const;
@@ -227,6 +228,7 @@ describe("LedgerPort", () => {
     const ledger = new DynamicLedger({
       signer: fakeSigner({ usdc: 19_999_000n }),
       profile: async () => PROFILE,
+      copPerUsdc: COP_PER_USDC,
     });
 
     const answer = await ledger.answerQuery({ ...payAction({}), intent: "balance" });
@@ -239,20 +241,49 @@ describe("LedgerPort", () => {
     const ledger = new DynamicLedger({
       signer: fakeSigner({ usdc: 2_500_000n }),
       profile: async () => PROFILE,
+      copPerUsdc: COP_PER_USDC,
     });
 
     const summary = await ledger.buildSummary();
 
     expect(summary.identity.name).toBe("Mateo Pirela");
     expect(summary.rawTransactions.length).toBe(3);
-    // The chain is the source of truth for balance (2.5 USDC), overriding the seed.
-    expect(summary.exactBalance).toBe(2.5);
+    // The chain is the source of truth for balance, expressed in the profile's own
+    // unit (COP) so it is comparable with the transactions: 2.5 USDC * 4000.
+    expect(summary.exactBalance).toBe(10_000);
+  });
+
+  test("el perfil se deriva de DEMO_SPEND, no de un seed paralelo", async () => {
+    const { profileFromSpend } = await import("./dynamicPorts.js");
+    const { DEMO_SPEND } = await import("../dashboard/demoSeed.js");
+
+    const profile = profileFromSpend(DEMO_SPEND);
+
+    // Mes corriente = el más reciente de la fuente compartida (julio 2026).
+    expect(profile.transactions.length).toBeGreaterThan(0);
+    for (const tx of profile.transactions) {
+      expect(tx.date.slice(0, 7)).toBe("2026-07");
+    }
+
+    // Los ingresos salen de las filas direction:"income", no de un número inventado.
+    expect(profile.monthlyIncome).toBe(4_000_000);
+
+    // Cada gasto de julio en DEMO_SPEND aparece en el perfil: no se pierde ninguno,
+    // que era exactamente la divergencia entre las dos fuentes anteriores.
+    const julyExpenses = DEMO_SPEND.filter(
+      (r) => r.date.slice(0, 7) === "2026-07" && r.direction !== "income",
+    );
+    expect(profile.transactions.length).toBe(julyExpenses.length);
+
+    // Las tendencias se calculan contra junio real, no contra totales a mano.
+    expect(Object.keys(profile.priorPeriodTotals ?? {}).length).toBeGreaterThan(0);
   });
 
   test("spending insight names the top categories", async () => {
     const ledger = new DynamicLedger({
       signer: fakeSigner(),
       profile: async () => PROFILE,
+      copPerUsdc: COP_PER_USDC,
     });
 
     const answer = await ledger.answerQuery({ ...payAction({}), intent: "spending_insight" });

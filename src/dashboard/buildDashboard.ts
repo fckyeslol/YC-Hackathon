@@ -33,7 +33,7 @@ export interface BuildDashboardOptions {
 
 const SUBSCRIPTIONS: Category = "suscripciones";
 const OTHERS_CATEGORY: Category = "otros";
-const OTHERS_MERCHANT = "Otros";
+const OTHERS_MERCHANT = "Other";
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 

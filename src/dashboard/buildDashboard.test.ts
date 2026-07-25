@@ -66,8 +66,8 @@ describe("buildDashboard (spec: dashboard-visualization §4)", () => {
       tx({ id: `m${i}`, amountUsdc: 100 - i, direction: "expense", category: "compras", merchant: `Tienda${i}` }),
     );
     const data = buildDashboard(txs, "mes", { generatedAt: AT });
-    expect(data.topMerchants.length).toBe(8); // 7 + Otros
-    expect(data.topMerchants[data.topMerchants.length - 1]!.merchant).toBe("Otros");
+    expect(data.topMerchants.length).toBe(8); // 7 + Other
+    expect(data.topMerchants[data.topMerchants.length - 1]!.merchant).toBe("Other");
   });
 
   test("KPIs: net, txCount (transfers excluded), subscriptions", () => {
